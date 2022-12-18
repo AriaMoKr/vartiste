@@ -1,33 +1,9 @@
 const three = THREE
 
-const { ShaderMaterial, NoBlending, NormalBlending, Color, Vector2, WebGLRenderTarget, RGBAFormat, FloatType, BufferAttribute, Mesh, BufferGeometry, PerspectiveCamera, DataTexture, ClampToEdgeWrapping, DoubleSide, BackSide, FrontSide, OrthographicCamera, PlaneGeometry, UnsignedByteType, LinearFilter, RepeatWrapping, MeshBasicMaterial, NoToneMapping, Source, HalfFloatType, DataUtils, RedFormat, PMREMGenerator, EquirectangularReflectionMapping, Vector3, Quaternion, Matrix4, Matrix3 } = three;
-import {Pass as Pass$1} from './three-pass.js';
-const FullScreenQuad$1 = Pass$1.FullScreenQuad
-window.FullScreenQuad = Pass
-import { StaticGeometryGenerator, SAH, MeshBVH, MeshBVHUniformStruct, FloatVertexAttributeTexture, UIntVertexAttributeTexture, shaderStructs, shaderIntersectFunction } from './three-mesh-bvh.js';
-// const { mergeVertices, mergeBufferGeometries } = THREE.BufferGeometryUtils;
-const mergeBufferGeometries = THREE.BufferGeometryUtils.mergeBufferGeometries.bind(THREE.BufferGeometryUtils)
-const mergeVertices = THREE.BufferGeometryUtils.mergeVertices.bind(THREE.BufferGeometryUtils)
-
-class WebGLArrayRenderTarget extends THREE.WebGLRenderTarget {
-
-	constructor( width, height, depth ) {
-
-		super( width, height );
-
-		this.depth = depth;
-
-		this.texture = new THREE.DataTexture2DArray( null, width, height, depth );
-
-		this.texture.isRenderTargetTexture = true;
-
-	}
-
-}
-
-WebGLArrayRenderTarget.prototype.isWebGLArrayRenderTarget = true;
-
-const BaseTextureType = WebGLArrayRenderTarget
+const { ShaderMaterial, NoBlending, NormalBlending, Color, Vector2, WebGLRenderTarget, RGBAFormat, FloatType, BufferAttribute, Mesh, BufferGeometry, PerspectiveCamera, Camera, SpotLight, RectAreaLight, Spherical, DataTexture, EquirectangularReflectionMapping, RepeatWrapping, ClampToEdgeWrapping, LinearFilter, Vector3, DoubleSide, BackSide, FrontSide, WebGLArrayRenderTarget, UnsignedByteType, MeshBasicMaterial, NoToneMapping, Source, HalfFloatType, DataUtils, RedFormat, Matrix4, Quaternion, Loader, MathUtils, FileLoader, PMREMGenerator, Vector4, DataArrayTexture } = THREE;
+import { FullScreenQuad } from './three-pass.js';
+import { StaticGeometryGenerator, SAH, MeshBVH, FloatVertexAttributeTexture, MeshBVHUniformStruct, UIntVertexAttributeTexture, shaderStructs, shaderIntersectFunction } from 'three-mesh-bvh';
+import { mergeVertices, mergeBufferGeometries } from './three-buffer-geometry-utils'
 
 class MaterialBase extends ShaderMaterial {
 
@@ -185,31 +161,61 @@ function* renderTask() {
 		material.resolution.set( w, h );
 		material.seed ++;
 
-		const tx = this.tiles.x || 1;
-		const ty = this.tiles.y || 1;
-		const totalTiles = tx * ty;
+		const tilesX = this.tiles.x || 1;
+		const tilesY = this.tiles.y || 1;
+		const totalTiles = tilesX * tilesY;
 		const dprInv = ( 1 / _renderer.getPixelRatio() );
-		for ( let y = 0; y < ty; y ++ ) {
+		for ( let y = 0; y < tilesY; y ++ ) {
 
-			for ( let x = 0; x < tx; x ++ ) {
+			for ( let x = 0; x < tilesX; x ++ ) {
 
 				material.cameraWorldMatrix.copy( camera.matrixWorld );
 				material.invProjectionMatrix.copy( camera.projectionMatrixInverse );
+
+				// Perspective camera (default)
+				let cameraType = 0;
+
 				// An orthographic projection matrix will always have the bottom right element == 1
 				// And a perspective projection matrix will always have the bottom right element == 0
-				material.setDefine( 'CAMERA_TYPE', camera.projectionMatrix.elements[ 15 ] > 0 ? 1 : 0 );
+				if ( camera.projectionMatrix.elements[ 15 ] > 0 ) {
+
+					// Orthographic
+					cameraType = 1;
+
+				}
+
+				if ( camera.isEquirectCamera ) {
+
+					// Equirectangular
+					cameraType = 2;
+
+				}
+
+				material.setDefine( 'CAMERA_TYPE', cameraType );
 
 				const ogRenderTarget = _renderer.getRenderTarget();
 				const ogAutoClear = _renderer.autoClear;
+
+				let tx = x;
+				let ty = y;
+				if ( ! this.stableTiles ) {
+
+					const tileIndex = ( this._currentTile ) % ( tilesX * tilesY );
+					tx = tileIndex % tilesX;
+					ty = ~ ~ ( tileIndex / tilesX );
+
+					this._currentTile = tileIndex + 1;
+
+				}
 
 				// three.js renderer takes values relative to the current pixel ratio
 				_renderer.setRenderTarget( _primaryTarget );
 				_renderer.setScissorTest( true );
 				_renderer.setScissor(
-					dprInv * Math.ceil( x * w / tx ),
-					dprInv * Math.ceil( ( ty - y - 1 ) * h / ty ),
-					dprInv * Math.ceil( w / tx ),
-					dprInv * Math.ceil( h / ty ) );
+					dprInv * Math.ceil( tx * w / tilesX ),
+					dprInv * Math.ceil( ( tilesY - ty - 1 ) * h / tilesY ),
+					dprInv * Math.ceil( w / tilesX ),
+					dprInv * Math.ceil( h / tilesY ) );
 				_renderer.autoClear = false;
 				_fsQuad.render( _renderer );
 
@@ -292,11 +298,14 @@ class PathTracingRenderer {
 
 		this.samples = 0;
 		this.stableNoise = false;
+		this.stableTiles = true;
+
 		this._renderer = renderer;
 		this._alpha = false;
-		this._fsQuad = new FullScreenQuad$1( null );
-		this._blendQuad = new FullScreenQuad$1( new BlendMaterial() );
+		this._fsQuad = new FullScreenQuad( null );
+		this._blendQuad = new FullScreenQuad( new BlendMaterial() );
 		this._task = null;
+		this._currentTile = 0;
 
 		this._primaryTarget = new WebGLRenderTarget( 1, 1, {
 			format: RGBAFormat,
@@ -388,12 +397,23 @@ function getGroupMaterialIndicesAttribute( geometry, materials, allMaterials ) {
 	const indexAttr = geometry.index;
 	const posAttr = geometry.attributes.position;
 	const vertCount = posAttr.count;
-	const materialArray = new Uint8Array( vertCount );
 	const totalCount = indexAttr ? indexAttr.count : vertCount;
 	let groups = geometry.groups;
 	if ( groups.length === 0 ) {
 
 		groups = [ { count: totalCount, start: 0, materialIndex: 0 } ];
+
+	}
+
+	// use an array with the minimum precision required to store all material id references.
+	let materialArray;
+	if ( allMaterials.length <= 255 ) {
+
+		materialArray = new Uint8Array( vertCount );
+
+	} else {
+
+		materialArray = new Uint16Array( vertCount );
 
 	}
 
@@ -484,6 +504,15 @@ function setCommonAttributes( geometry, options ) {
 
 	}
 
+	if ( ! geometry.attributes.color && ( attributes && attributes.includes( 'color' ) ) ) {
+
+		const vertCount = geometry.attributes.position.count;
+		const array = new Float32Array( vertCount * 4 );
+		array.fill( 1.0 );
+		geometry.setAttribute( 'color', new BufferAttribute( array, 4 ) );
+
+	}
+
 	if ( ! geometry.index ) {
 
 		// TODO: compute a typed array
@@ -512,6 +541,9 @@ function mergeMeshes( meshes, options = {} ) {
 		// save any materials
 		const mesh = meshes[ i ];
 		if ( mesh.visible === false ) continue;
+		if ( !mesh.geometry.index ) continue;
+		if ( mesh.geometry.attributes.position.itemSize !== 3) continue;
+		if (!mesh.material.color) continue;
 
 		if ( Array.isArray( mesh.material ) ) {
 
@@ -531,6 +563,9 @@ function mergeMeshes( meshes, options = {} ) {
 		// ensure the matrix world is up to date
 		const mesh = meshes[ i ];
 		if ( mesh.visible === false ) continue;
+		if ( !mesh.geometry.index ) continue;
+		if ( mesh.geometry.attributes.position.itemSize !== 3) continue;
+		if (!mesh.material.color) continue;
 
 		mesh.updateMatrixWorld();
 
@@ -580,40 +615,48 @@ class PathTracingSceneGenerator {
 
 	prepScene( scene ) {
 
+		scene = Array.isArray( scene ) ? scene : [ scene ];
+
 		const meshes = [];
 		const lights = [];
-		scene.traverse( c => {
 
-			if ( c.isSkinnedMesh || c.isMesh && c.morphTargetInfluences ) {
+		for ( let i = 0, l = scene.length; i < l; i ++ ) {
 
-				const generator = new StaticGeometryGenerator( c );
-				generator.applyWorldTransforms = false;
-				const mesh = new Mesh(
-					generator.generate(),
-					c.material,
-				);
-				mesh.matrixWorld.copy( c.matrixWorld );
-				mesh.matrix.copy( c.matrixWorld );
-				mesh.matrix.decompose( mesh.position, mesh.quaternion, mesh.scale );
-				meshes.push( mesh );
+			scene[ i ].traverseVisible( c => {
 
-			} else if ( c.isMesh ) {
+				if ( c.isSkinnedMesh || c.isMesh && c.morphTargetInfluences ) {
 
-				meshes.push( c );
+					const generator = new StaticGeometryGenerator( c );
+					generator.attributes = [ 'position', 'color', 'normal', 'tangent', 'uv', 'uv2' ];
+					generator.applyWorldTransforms = false;
+					const mesh = new Mesh(
+						generator.generate(),
+						c.material,
+					);
+					mesh.matrixWorld.copy( c.matrixWorld );
+					mesh.matrix.copy( c.matrixWorld );
+					mesh.matrix.decompose( mesh.position, mesh.quaternion, mesh.scale );
+					meshes.push( mesh );
 
-			} else if ( c.isRectAreaLight ) {
+				} else if ( c.isMesh ) {
 
-				lights.push( c );
+					meshes.push( c );
 
-			}
+				} else if ( c.isRectAreaLight || c.isSpotLight ) {
 
-		} );
+					lights.push( c );
+
+				}
+
+			} );
+
+		}
 
 		return {
 			...mergeMeshes( meshes, {
-				attributes: [ 'position', 'normal', 'tangent', 'uv' ],
+				attributes: [ 'position', 'normal', 'tangent', 'uv', 'color' ],
 			} ),
-			lights
+			lights,
 		};
 
 	}
@@ -644,12 +687,13 @@ class DynamicPathTracingSceneGenerator {
 
 	constructor( scene ) {
 
-		this.scene = scene;
+		this.objects = Array.isArray( scene ) ? scene : [ scene ];
 		this.bvh = null;
 		this.geometry = new BufferGeometry();
 		this.materials = null;
 		this.textures = null;
-		this.staticGeometryGenerator = new StaticGeometryGenerator( scene );
+		this.lights = [];
+		this.staticGeometryGenerator = new StaticGeometryGenerator( this.objects );
 
 	}
 
@@ -660,7 +704,8 @@ class DynamicPathTracingSceneGenerator {
 		this.geometry = new BufferGeometry();
 		this.materials = null;
 		this.textures = null;
-		this.staticGeometryGenerator = new StaticGeometryGenerator( this.scene );
+		this.lights = [];
+		this.staticGeometryGenerator = new StaticGeometryGenerator( this.objects );
 
 	}
 
@@ -668,20 +713,29 @@ class DynamicPathTracingSceneGenerator {
 
 	generate() {
 
-		const { scene, staticGeometryGenerator, geometry } = this;
+		const { objects, staticGeometryGenerator, geometry } = this;
 		if ( this.bvh === null ) {
 
-			const attributes = [ 'position', 'normal', 'tangent', 'uv' ];
-			scene.traverse( c => {
+			const attributes = [ 'position', 'normal', 'tangent', 'uv', 'color' ];
 
-				if ( c.isMesh ) {
+			for ( let i = 0, l = objects.length; i < l; i ++ ) {
 
-					const normalMapRequired = ! ! c.material.normalMap;
-					setCommonAttributes( c.geometry, { attributes, normalMapRequired } );
+				objects[ i ].traverse( c => {
 
-				}
+					if ( c.isMesh ) {
 
-			} );
+						const normalMapRequired = ! ! c.material.normalMap;
+						setCommonAttributes( c.geometry, { attributes, normalMapRequired } );
+
+					} else if ( c.isRectAreaLight || c.isSpotLight ) {
+
+						this.lights.push( c );
+
+					}
+
+				} );
+
+			}
 
 			const textureSet = new Set();
 			const materials = staticGeometryGenerator.getMaterials();
@@ -712,10 +766,11 @@ class DynamicPathTracingSceneGenerator {
 			this.textures = Array.from( textureSet );
 
 			return {
+				lights: this.lights,
 				bvh: this.bvh,
 				materials: this.materials,
 				textures: this.textures,
-				scene,
+				objects,
 			};
 
 		} else {
@@ -724,10 +779,11 @@ class DynamicPathTracingSceneGenerator {
 			staticGeometryGenerator.generate( geometry );
 			bvh.refit();
 			return {
+				lights: this.lights,
 				bvh: this.bvh,
 				materials: this.materials,
 				textures: this.textures,
-				scene,
+				objects,
 			};
 
 		}
@@ -1021,8 +1077,165 @@ class PhysicalCamera extends PerspectiveCamera {
 
 }
 
-const MATERIAL_PIXELS = 19;
+class EquirectCamera extends Camera {
+
+	constructor() {
+
+		super();
+
+		this.isEquirectCamera = true;
+
+	}
+
+}
+
+class PhysicalSpotLight extends SpotLight {
+
+	constructor( ...args ) {
+
+		super( ...args );
+
+		this.iesTexture = null;
+		this.radius = 0;
+
+	}
+
+}
+
+class ShapedAreaLight extends RectAreaLight {
+
+	constructor( ...args ) {
+
+		super( ...args );
+		this.isCircular = false;
+
+	}
+
+}
+
+const _uv = new Vector2();
+const _coord = new Vector2();
+const _polar = new Spherical();
+const _color = new Color();
+class ProceduralEquirectTexture extends DataTexture {
+
+	constructor( width, height ) {
+
+		super(
+			new Float32Array( width * height * 4 ),
+			width, height, RGBAFormat, FloatType, EquirectangularReflectionMapping,
+			RepeatWrapping, ClampToEdgeWrapping, LinearFilter, LinearFilter,
+		);
+
+		this.generationCallback = null;
+
+	}
+
+	update() {
+
+		this.dispose();
+		this.needsUpdate = true;
+
+		const { data, width, height } = this.image;
+		for ( let x = 0; x < width; x ++ ) {
+
+			for ( let y = 0; y < height; y ++ ) {
+
+				_coord.set( width, height );
+
+				_uv.set( x / width, y / height );
+				_uv.x -= 0.5;
+				_uv.y = 1.0 - _uv.y;
+
+				_polar.theta = _uv.x * 2.0 * Math.PI;
+				_polar.phi = _uv.y * Math.PI;
+				_polar.radius = 1.0;
+
+				this.generationCallback( _polar, _uv, _coord, _color );
+
+				const i = y * width + x;
+				const i4 = 4 * i;
+				data[ i4 + 0 ] = _color.r;
+				data[ i4 + 1 ] = _color.g;
+				data[ i4 + 2 ] = _color.b;
+				data[ i4 + 3 ] = 1.0;
+
+			}
+
+		}
+
+	}
+
+	copy( other ) {
+
+		super.copy( other );
+		this.generationCallback = other.generationCallback;
+		return this;
+
+	}
+
+}
+
+const _direction = new Vector3();
+class GradientEquirectTexture extends ProceduralEquirectTexture {
+
+	constructor( resolution = 512 ) {
+
+		super( resolution, resolution );
+
+		this.topColor = new Color().set( 0xffffff );
+		this.bottomColor = new Color().set( 0x000000 );
+		this.exponent = 2;
+		this.generationCallback = ( polar, uv, coord, color ) => {
+
+			_direction.setFromSpherical( polar );
+
+			const t = _direction.y * 0.5 + 0.5;
+			color.lerpColors( this.bottomColor, this.topColor, t ** this.exponent );
+
+		};
+
+	}
+
+	copy( other ) {
+
+		super.copy( other );
+
+		this.topColor.copy( other.topColor );
+		this.bottomColor.copy( other.bottomColor );
+		return this;
+
+	}
+
+}
+
+// reduce the set of textures to just those with a unique source while retaining
+// the order of the textures.
+function reduceTexturesToUniqueSources( textures ) {
+
+	const sourceSet = new Set();
+	const result = [];
+	for ( let i = 0, l = textures.length; i < l; i ++ ) {
+
+		const tex = textures[ i ];
+		if ( ! sourceSet.has( tex.source ) ) {
+
+			sourceSet.add( tex.source );
+			result.push( tex );
+
+		}
+
+	}
+
+	return result;
+
+}
+
+const MATERIAL_PIXELS = 45;
 const MATERIAL_STRIDE = MATERIAL_PIXELS * 4;
+
+const MATTE_OFFSET = 14 * 4 + 0; // s14.r
+const SHADOW_OFFSET = 14 * 4 + 1; // s14.g
 
 class MaterialsTexture extends DataTexture {
 
@@ -1035,6 +1248,7 @@ class MaterialsTexture extends DataTexture {
 		this.wrapS = ClampToEdgeWrapping;
 		this.wrapT = ClampToEdgeWrapping;
 		this.generateMipmaps = false;
+		this.threeCompatibilityTransforms = false;
 
 	}
 
@@ -1042,7 +1256,7 @@ class MaterialsTexture extends DataTexture {
 
 		// invert the shadow value so we default to "true" when initializing a material
 		const array = this.image.data;
-		const index = materialIndex * MATERIAL_STRIDE + 6 * 4 + 0;
+		const index = materialIndex * MATERIAL_STRIDE + SHADOW_OFFSET;
 		array[ index ] = ! cast ? 1 : 0;
 
 	}
@@ -1050,54 +1264,15 @@ class MaterialsTexture extends DataTexture {
 	getCastShadow( materialIndex ) {
 
 		const array = this.image.data;
-		const index = materialIndex * MATERIAL_STRIDE + 6 * 4 + 0;
+		const index = materialIndex * MATERIAL_STRIDE + SHADOW_OFFSET;
 		return ! Boolean( array[ index ] );
-
-	}
-
-	setSide( materialIndex, side ) {
-
-		const array = this.image.data;
-		const index = materialIndex * MATERIAL_STRIDE + 5 * 4 + 2;
-		switch ( side ) {
-
-		case FrontSide:
-			array[ index ] = 1;
-			break;
-		case BackSide:
-			array[ index ] = - 1;
-			break;
-		case DoubleSide:
-			array[ index ] = 0;
-			break;
-
-		}
-
-	}
-
-	getSide( materialIndex ) {
-
-		const array = this.image.data;
-		const index = materialIndex * MATERIAL_STRIDE + 5 * 4 + 2;
-		switch ( array[ index ] ) {
-
-		case 0:
-			return DoubleSide;
-		case 1:
-			return FrontSide;
-		case - 1:
-			return BackSide;
-
-		}
-
-		return 0;
 
 	}
 
 	setMatte( materialIndex, matte ) {
 
 		const array = this.image.data;
-		const index = materialIndex * MATERIAL_STRIDE + 5 * 4 + 3;
+		const index = materialIndex * MATERIAL_STRIDE + MATTE_OFFSET;
 		array[ index ] = matte ? 1 : 0;
 
 	}
@@ -1105,7 +1280,7 @@ class MaterialsTexture extends DataTexture {
 	getMatte( materialIndex ) {
 
 		const array = this.image.data;
-		const index = materialIndex * MATERIAL_STRIDE + 5 * 4 + 3;
+		const index = materialIndex * MATERIAL_STRIDE + MATTE_OFFSET;
 		return Boolean( array[ index ] );
 
 	}
@@ -1114,7 +1289,16 @@ class MaterialsTexture extends DataTexture {
 
 		function getTexture( material, key, def = - 1 ) {
 
-			return key in material ? textures.indexOf( material[ key ] ) : def;
+			if ( key in material && material[ key ] ) {
+
+				const source = material[ key ].source;
+				return uniqueTextures.findIndex( tex => tex.source === source );
+
+			} else {
+
+				return def;
+
+			}
 
 		}
 
@@ -1124,20 +1308,52 @@ class MaterialsTexture extends DataTexture {
 
 		}
 
-		/**
-		 *
-		 * @param {Object} material
-		 * @param {string} textureKey
-		 * @param {Float32Array} array
-		 * @param {number} offset
-		 * @returns {8} number of floats occupied by texture transform matrix
-		 */
+		function getUVTransformTexture( material ) {
+
+			// https://github.com/mrdoob/three.js/blob/f3a832e637c98a404c64dae8174625958455e038/src/renderers/webgl/WebGLMaterials.js#L204-L306
+			// https://threejs.org/docs/#api/en/textures/Texture.offset
+			// fallback order of textures to use as a common uv transform
+			return material.map ||
+				material.specularMap ||
+				material.displacementMap ||
+				material.normalMap ||
+				material.bumpMap ||
+				material.roughnessMap ||
+				material.metalnessMap ||
+				material.alphaMap ||
+				material.emissiveMap ||
+				material.clearcoatMap ||
+				material.clearcoatNormalMap ||
+				material.clearcoatRoughnessMap ||
+				material.iridescenceMap ||
+				material.iridescenceThicknessMap ||
+				material.specularIntensityMap ||
+				material.specularColorMap ||
+				material.transmissionMap ||
+				material.thicknessMap ||
+				material.sheenColorMap ||
+				material.sheenRoughnessMap ||
+				null;
+
+		}
+
 		function writeTextureMatrixToArray( material, textureKey, array, offset ) {
 
-			// check if texture exists
-			if ( material[ textureKey ] && material[ textureKey ].isTexture ) {
+			let texture;
+			if ( threeCompatibilityTransforms ) {
 
-				const elements = material[ textureKey ].matrix.elements;
+				texture = getUVTransformTexture( material );
+
+			} else {
+
+				texture = material[ textureKey ] && material[ textureKey ].isTexture ? material[ textureKey ] : null;
+
+			}
+
+			// check if texture exists
+			if ( texture ) {
+
+				const elements = texture.matrix.elements;
 
 				let i = 0;
 
@@ -1162,18 +1378,22 @@ class MaterialsTexture extends DataTexture {
 		let index = 0;
 		const pixelCount = materials.length * MATERIAL_PIXELS;
 		const dimension = Math.ceil( Math.sqrt( pixelCount ) );
+		const { threeCompatibilityTransforms, image } = this;
 
-		if ( this.image.width !== dimension ) {
+		// get the list of textures with unique sources
+		const uniqueTextures = reduceTexturesToUniqueSources( textures );
+
+		if ( image.width !== dimension ) {
 
 			this.dispose();
 
-			this.image.data = new Float32Array( dimension * dimension * 4 );
-			this.image.width = dimension;
-			this.image.height = dimension;
+			image.data = new Float32Array( dimension * dimension * 4 );
+			image.width = dimension;
+			image.height = dimension;
 
 		}
 
-		const floatArray = this.image.data;
+		const floatArray = image.data;
 
 		// on some devices (Google Pixel 6) the "floatBitsToInt" function does not work correctly so we
 		// can't encode texture ids that way.
@@ -1183,92 +1403,243 @@ class MaterialsTexture extends DataTexture {
 
 			const m = materials[ i ];
 
-			try {
+			// sample 0
+			// color
+			floatArray[ index ++ ] = m.color.r;
+			floatArray[ index ++ ] = m.color.g;
+			floatArray[ index ++ ] = m.color.b;
+			floatArray[ index ++ ] = getTexture( m, 'map' );
 
-				// color
-				floatArray[ index ++ ] = m.color.r;
-				floatArray[ index ++ ] = m.color.g;
-				floatArray[ index ++ ] = m.color.b;
-				floatArray[ index ++ ] = getTexture( m, 'map' );
+			// sample 1
+			// metalness & roughness
+			floatArray[ index ++ ] = getField( m, 'metalness', 0.0 );
+			floatArray[ index ++ ] = uniqueTextures.indexOf( m.metalnessMap );
+			floatArray[ index ++ ] = getField( m, 'roughness', 0.0 );
+			floatArray[ index ++ ] = uniqueTextures.indexOf( m.roughnessMap );
 
-				// metalness & roughness
-				floatArray[ index ++ ] = getField( m, 'metalness', 0.0 );
-				floatArray[ index ++ ] = textures.indexOf( m.metalnessMap );
-				floatArray[ index ++ ] = getField( m, 'roughness', 0.0 );
-				floatArray[ index ++ ] = textures.indexOf( m.roughnessMap );
+			// sample 2
+			// transmission & emissiveIntensity
+			// three.js assumes a default f0 of 0.04 if no ior is provided which equates to an ior of 1.5
+			floatArray[ index ++ ] = getField( m, 'ior', 1.5 );
+			floatArray[ index ++ ] = getField( m, 'transmission', 0.0 );
+			floatArray[ index ++ ] = getTexture( m, 'transmissionMap' );
+			floatArray[ index ++ ] = getField( m, 'emissiveIntensity', 0.0 );
 
-				// transmission & emissiveIntensity
-				floatArray[ index ++ ] = getField( m, 'ior', 1.0 );
-				floatArray[ index ++ ] = getField( m, 'transmission', 0.0 );
-				floatArray[ index ++ ] = getTexture( m, 'transmissionMap' );
-				floatArray[ index ++ ] = getField( m, 'emissiveIntensity', 0.0 );
+			// sample 3
+			// emission
+			if ( 'emissive' in m ) {
 
-				// emission
-				if ( 'emissive' in m ) {
+				floatArray[ index ++ ] = m.emissive.r;
+				floatArray[ index ++ ] = m.emissive.g;
+				floatArray[ index ++ ] = m.emissive.b;
 
-					floatArray[ index ++ ] = m.emissive.r;
-					floatArray[ index ++ ] = m.emissive.g;
-					floatArray[ index ++ ] = m.emissive.b;
+			} else {
 
-				} else {
+				floatArray[ index ++ ] = 0.0;
+				floatArray[ index ++ ] = 0.0;
+				floatArray[ index ++ ] = 0.0;
 
-					floatArray[ index ++ ] = 0.0;
-					floatArray[ index ++ ] = 0.0;
-					floatArray[ index ++ ] = 0.0;
+			}
+
+			floatArray[ index ++ ] = getTexture( m, 'emissiveMap' );
+
+			// sample 4
+			// normals
+			floatArray[ index ++ ] = getTexture( m, 'normalMap' );
+			if ( 'normalScale' in m ) {
+
+				floatArray[ index ++ ] = m.normalScale.x;
+				floatArray[ index ++ ] = m.normalScale.y;
+
+ 			} else {
+
+ 				floatArray[ index ++ ] = 1;
+ 				floatArray[ index ++ ] = 1;
+
+ 			}
+
+			// clearcoat
+			floatArray[ index ++ ] = getField( m, 'clearcoat', 0.0 );
+			floatArray[ index ++ ] = getTexture( m, 'clearcoatMap' ); // sample 5
+
+			floatArray[ index ++ ] = getField( m, 'clearcoatRoughness', 0.0 );
+			floatArray[ index ++ ] = getTexture( m, 'clearcoatRoughnessMap' );
+
+			floatArray[ index ++ ] = getTexture( m, 'clearcoatNormalMap' );
+
+			// sample 6
+			if ( 'clearcoatNormalScale' in m ) {
+
+				floatArray[ index ++ ] = m.clearcoatNormalScale.x;
+				floatArray[ index ++ ] = m.clearcoatNormalScale.y;
+
+			} else {
+
+				floatArray[ index ++ ] = 1;
+				floatArray[ index ++ ] = 1;
+
+			}
+
+			index ++;
+			index ++;
+
+			// sample 7
+			// sheen
+			if ( 'sheenColor' in m ) {
+
+				floatArray[ index ++ ] = m.sheenColor.r;
+				floatArray[ index ++ ] = m.sheenColor.g;
+				floatArray[ index ++ ] = m.sheenColor.b;
+
+			} else {
+
+				floatArray[ index ++ ] = 0.0;
+				floatArray[ index ++ ] = 0.0;
+				floatArray[ index ++ ] = 0.0;
+
+			}
+
+			floatArray[ index ++ ] = getTexture( m, 'sheenColorMap' );
+
+			// sample 8
+			floatArray[ index ++ ] = getField( m, 'sheenRoughness', 0.0 );
+			floatArray[ index ++ ] = getTexture( m, 'sheenRoughnessMap' );
+
+			// iridescence
+			floatArray[ index ++ ] = getTexture( m, 'iridescenceMap' );
+			floatArray[ index ++ ] = getTexture( m, 'iridescenceThicknessMap' );
+
+			floatArray[ index ++ ] = getField( m, 'iridescence', 0.0 ); // sample 9
+			floatArray[ index ++ ] = getField( m, 'iridescenceIOR', 1.3 );
+
+			const iridescenceThicknessRange = getField( m, 'iridescenceThicknessRange', [ 100, 400 ] );
+			floatArray[ index ++ ] = iridescenceThicknessRange[ 0 ];
+			floatArray[ index ++ ] = iridescenceThicknessRange[ 1 ];
+
+			// sample 10
+			// specular color
+			if ( 'specularColor' in m ) {
+
+				floatArray[ index ++ ] = m.specularColor.r;
+				floatArray[ index ++ ] = m.specularColor.g;
+				floatArray[ index ++ ] = m.specularColor.b;
+
+			} else {
+
+				floatArray[ index ++ ] = 1.0;
+				floatArray[ index ++ ] = 1.0;
+				floatArray[ index ++ ] = 1.0;
+
+			}
+
+			floatArray[ index ++ ] = getTexture( m, 'specularColorMap' );
+
+			// sample 11
+			// specular intensity
+			floatArray[ index ++ ] = getField( m, 'specularIntensity', 1.0 );
+			floatArray[ index ++ ] = getTexture( m, 'specularIntensityMap' );
+
+			// isThinFilm
+			const isThinFilm = getField( m, 'thickness', 0.0 ) === 0.0 && getField( m, 'attenuationDistance', Infinity ) === Infinity;
+			floatArray[ index ++ ] = Number( isThinFilm );
+			index ++;
+
+			// sample 12
+			if ( 'attenuationColor' in m ) {
+
+				floatArray[ index ++ ] = m.attenuationColor.r;
+				floatArray[ index ++ ] = m.attenuationColor.g;
+				floatArray[ index ++ ] = m.attenuationColor.b;
+
+			} else {
+
+				floatArray[ index ++ ] = 1.0;
+				floatArray[ index ++ ] = 1.0;
+				floatArray[ index ++ ] = 1.0;
+
+			}
+
+			floatArray[ index ++ ] = getField( m, 'attenuationDistance', Infinity );
+
+			// sample 13
+			// alphaMap
+			floatArray[ index ++ ] = getTexture( m, 'alphaMap' );
+
+			// side & matte
+			floatArray[ index ++ ] = m.opacity;
+			floatArray[ index ++ ] = m.alphaTest;
+			if ( ! isThinFilm && m.transmission > 0.0 ) {
+
+				floatArray[ index ++ ] = 0;
+
+			} else {
+
+				switch ( m.side ) {
+
+				case FrontSide:
+					floatArray[ index ++ ] = 1;
+					break;
+				case BackSide:
+					floatArray[ index ++ ] = - 1;
+					break;
+				case DoubleSide:
+					floatArray[ index ++ ] = 0;
+					break;
 
 				}
 
-				floatArray[ index ++ ] = getTexture( m, 'emissiveMap' );
-
-				// normals
-				floatArray[ index ++ ] = getTexture( m, 'normalMap' );
-				if ( 'normalScale' in m ) {
-
-					floatArray[ index ++ ] = m.normalScale.x;
-					floatArray[ index ++ ] = m.normalScale.y;
-
-	 			} else {
-
-	 				floatArray[ index ++ ] = 1;
-	 				floatArray[ index ++ ] = 1;
-
-	 			}
-
-				floatArray[ index ++ ] = getTexture( m, 'alphaMap' );
-
-				// side & matte
-				floatArray[ index ++ ] = m.opacity;
-				floatArray[ index ++ ] = m.alphaTest;
-				index ++; // side
-				index ++; // matte
-
-				index ++; // shadow
-				index ++;
-				index ++;
-				index ++;
-
-				// map transform
-				index += writeTextureMatrixToArray( m, 'map', floatArray, index );
-
-				// metalnessMap transform
-				index += writeTextureMatrixToArray( m, 'metalnessMap', floatArray, index );
-
-				// roughnessMap transform
-				index += writeTextureMatrixToArray( m, 'roughnessMap', floatArray, index );
-
-				// transmissionMap transform
-				index += writeTextureMatrixToArray( m, 'transmissionMap', floatArray, index );
-
-				// emissiveMap transform
-				index += writeTextureMatrixToArray( m, 'emissiveMap', floatArray, index );
-
-				// normalMap transform
-				index += writeTextureMatrixToArray( m, 'normalMap', floatArray, index );
 			}
-			catch (e)
-			{
-				console.warn("Skipping material", m)
-			}
+
+			// sample 14
+			index ++; // matte
+			index ++; // shadow
+			floatArray[ index ++ ] = Number( m.vertexColors ); // vertexColors
+			floatArray[ index ++ ] = Number( m.transparent ); // transparent
+
+			// map transform 15
+			index += writeTextureMatrixToArray( m, 'map', floatArray, index );
+
+			// metalnessMap transform 17
+			index += writeTextureMatrixToArray( m, 'metalnessMap', floatArray, index );
+
+			// roughnessMap transform 19
+			index += writeTextureMatrixToArray( m, 'roughnessMap', floatArray, index );
+
+			// transmissionMap transform 21
+			index += writeTextureMatrixToArray( m, 'transmissionMap', floatArray, index );
+
+			// emissiveMap transform 22
+			index += writeTextureMatrixToArray( m, 'emissiveMap', floatArray, index );
+
+			// normalMap transform 25
+			index += writeTextureMatrixToArray( m, 'normalMap', floatArray, index );
+
+			// clearcoatMap transform 27
+			index += writeTextureMatrixToArray( m, 'clearcoatMap', floatArray, index );
+
+			// clearcoatNormalMap transform 29
+			index += writeTextureMatrixToArray( m, 'clearcoatNormalMap', floatArray, index );
+
+			// clearcoatRoughnessMap transform 31
+			index += writeTextureMatrixToArray( m, 'clearcoatRoughnessMap', floatArray, index );
+
+			// sheenColorMap transform 33
+			index += writeTextureMatrixToArray( m, 'sheenColorMap', floatArray, index );
+
+			// sheenRoughnessMap transform 35
+			index += writeTextureMatrixToArray( m, 'sheenRoughnessMap', floatArray, index );
+
+			// iridescenceMap transform 37
+			index += writeTextureMatrixToArray( m, 'iridescenceMap', floatArray, index );
+
+			// iridescenceThicknessMap transform 39
+			index += writeTextureMatrixToArray( m, 'iridescenceThicknessMap', floatArray, index );
+
+			// specularColorMap transform 41
+			index += writeTextureMatrixToArray( m, 'specularColorMap', floatArray, index );
+
+			// specularIntensityMap transform 43
+			index += writeTextureMatrixToArray( m, 'specularIntensityMap', floatArray, index );
 
 		}
 
@@ -1278,89 +1649,8 @@ class MaterialsTexture extends DataTexture {
 
 }
 
-function Pass() {
-
-	// if set to true, the pass is processed by the composer
-	this.enabled = true;
-
-	// if set to true, the pass indicates to swap read and write buffer after rendering
-	this.needsSwap = true;
-
-	// if set to true, the pass clears its buffer before rendering
-	this.clear = false;
-
-	// if set to true, the result of the pass is rendered to screen. This is set automatically by EffectComposer.
-	this.renderToScreen = false;
-
-}
-
-Object.assign( Pass.prototype, {
-
-	setSize: function ( /* width, height */ ) {},
-
-	render: function ( /* renderer, writeBuffer, readBuffer, deltaTime, maskActive */ ) {
-
-		console.error( 'THREE.Pass: .render() must be implemented in derived pass.' );
-
-	}
-
-} );
-
-// Helper for passes that need to fill the viewport with a single quad.
-
-// Important: It's actually a hack to put FullScreenQuad into the Pass namespace. This is only
-// done to make examples/js code work. Normally, FullScreenQuad should be exported
-// from this module like Pass.
-
-const FullScreenQuad = ( function () {
-
-	var camera = new OrthographicCamera( - 1, 1, 1, - 1, 0, 1 );
-	var geometry = new PlaneGeometry( 2, 2 );
-
-	var FullScreenQuad = function ( material ) {
-
-		this._mesh = new Mesh( geometry, material );
-
-	};
-
-	Object.defineProperty( FullScreenQuad.prototype, 'material', {
-
-		get: function () {
-
-			return this._mesh.material;
-
-		},
-
-		set: function ( value ) {
-
-			this._mesh.material = value;
-
-		}
-
-	} );
-
-	Object.assign( FullScreenQuad.prototype, {
-
-		dispose: function () {
-
-			this._mesh.geometry.dispose();
-
-		},
-
-		render: function ( renderer ) {
-
-			renderer.render( this._mesh, camera );
-
-		}
-
-	} );
-
-	return FullScreenQuad;
-
-} )();
-
-const prevColor = new Color();
-class RenderTarget2DArray extends BaseTextureType {
+const prevColor$1 = new Color();
+class RenderTarget2DArray extends WebGLArrayRenderTarget {
 
 	constructor( ...args ) {
 
@@ -1382,43 +1672,22 @@ class RenderTarget2DArray extends BaseTextureType {
 		const fsQuad = new FullScreenQuad( new MeshBasicMaterial() );
 		this.fsQuad = fsQuad;
 
-		// this.texture = this
-		// this.setTextures = this.setTextures.bind(this)
-
 	}
 
-	// setSize( width, height, depth = 1 ) {
-	//
-	// 	if ( this.width !== width || this.height !== height || this.depth !== depth ) {
-	//
-	// 		this.width = width;
-	// 		this.height = height;
-	// 		this.depth = depth;
-	//
-	// 		this.texture.image.width = width;
-	// 		this.texture.image.height = height;
-	// 		this.texture.image.depth = depth;
-	//
-	// 		this.dispose();
-	//
-	// 	}
-	//
-	// 	this.viewport.set( 0, 0, width, height );
-	// 	this.scissor.set( 0, 0, width, height );
-	//
-	// }
-
 	setTextures( renderer, width, height, textures ) {
+
+		// get the list of textures with unique sources
+		const uniqueTextures = reduceTexturesToUniqueSources( textures );
 
 		// save previous renderer state
 		const prevRenderTarget = renderer.getRenderTarget();
 		const prevToneMapping = renderer.toneMapping;
 		const prevAlpha = renderer.getClearAlpha();
-		renderer.getClearColor( prevColor );
+		renderer.getClearColor( prevColor$1 );
 
 		// resize the render target and ensure we don't have an empty texture
 		// render target depth must be >= 1 to avoid unbound texture error on android devices
-		const depth = textures.length || 1;
+		const depth = uniqueTextures.length || 1;
 		this.setSize( width, height, depth );
 		renderer.setClearColor( 0, 0 );
 		renderer.toneMapping = NoToneMapping;
@@ -1427,7 +1696,7 @@ class RenderTarget2DArray extends BaseTextureType {
 		const fsQuad = this.fsQuad;
 		for ( let i = 0, l = depth; i < l; i ++ ) {
 
-			const texture = textures[ i ];
+			const texture = uniqueTextures[ i ];
 			if ( texture ) {
 
 				// revert to default texture transform before rendering
@@ -1450,7 +1719,7 @@ class RenderTarget2DArray extends BaseTextureType {
 
 		// reset the renderer
 		fsQuad.material.map = null;
-		renderer.setClearColor( prevColor, prevAlpha );
+		renderer.setClearColor( prevColor$1, prevAlpha );
 		renderer.setRenderTarget( prevRenderTarget );
 		renderer.toneMapping = prevToneMapping;
 
@@ -1503,7 +1772,7 @@ function colorToLuminance( r, g, b ) {
 function preprocessEnvMap( envMap ) {
 
 	const map = envMap.clone();
-	// map.source = new Source( { ...map.image } );
+	map.source = new Source( { ...map.image } );
 	const { width, height, data } = map.image;
 
 	// TODO: is there a simple way to avoid cloning and adjusting the env map data here?
@@ -1576,19 +1845,14 @@ class EquirectHdrInfoUniform {
 		conditionalWeights.magFilter = LinearFilter;
 		conditionalWeights.generateMipmaps = false;
 
-		// store the total sum in a 1x1 tex since some android mobile devices have issues
-		// storing large values in structs.
-		const totalSumTex = new DataTexture();
-		totalSumTex.type = FloatType;
-		totalSumTex.format = RedFormat;
-		totalSumTex.minFilter = LinearFilter;
-		totalSumTex.magFilter = LinearFilter;
-		totalSumTex.generateMipmaps = false;
-
 		this.marginalWeights = marginalWeights;
 		this.conditionalWeights = conditionalWeights;
-		this.totalSum = totalSumTex;
 		this.map = null;
+
+		// the total sum value is separated into two values to work around low precision
+		// storage of floating values in structs
+		this.totalSumWhole = 0;
+		this.totalSumDecimal = 0;
 
 	}
 
@@ -1596,7 +1860,6 @@ class EquirectHdrInfoUniform {
 
 		this.marginalWeights.dispose();
 		this.conditionalWeights.dispose();
-		this.totalSum.dispose();
 		if ( this.map ) this.map.dispose();
 
 	}
@@ -1711,15 +1974,17 @@ class EquirectHdrInfoUniform {
 
 		this.dispose();
 
-		const { marginalWeights, conditionalWeights, totalSum } = this;
+		const { marginalWeights, conditionalWeights } = this;
 		marginalWeights.image = { width: height, height: 1, data: marginalDataArray };
 		marginalWeights.needsUpdate = true;
 
 		conditionalWeights.image = { width, height, data: conditionalDataArray };
 		conditionalWeights.needsUpdate = true;
 
-		totalSum.image = { width: 1, height: 1, data: new Float32Array( [ totalSumValue ] ) };
-		totalSum.needsUpdate = true;
+		const totalSumWhole = ~ ~ totalSumValue;
+		const totalSumDecimal = ( totalSumValue - totalSumWhole );
+		this.totalSumWhole = totalSumWhole;
+		this.totalSumDecimal = totalSumDecimal;
 
 		this.map = map;
 
@@ -1763,7 +2028,580 @@ class PhysicalCameraUniform {
 
 }
 
+const LIGHT_PIXELS = 6;
+const RECT_AREA_LIGHT = 0;
+const CIRC_AREA_LIGHT = 1;
+const SPOT_LIGHT = 2;
+class LightsInfoUniformStruct {
+
+	constructor() {
+
+		const tex = new DataTexture( new Float32Array( 4 ), 1, 1 );
+		tex.format = RGBAFormat;
+		tex.type = FloatType;
+		tex.wrapS = ClampToEdgeWrapping;
+		tex.wrapT = ClampToEdgeWrapping;
+		tex.generateMipmaps = false;
+
+		this.tex = tex;
+		this.count = 0;
+
+	}
+
+	updateFrom( lights, iesTextures = [] ) {
+
+		const tex = this.tex;
+		const pixelCount = Math.max( lights.length * LIGHT_PIXELS, 1 );
+		const dimension = Math.ceil( Math.sqrt( pixelCount ) );
+
+		if ( tex.image.width !== dimension ) {
+
+			tex.dispose();
+
+			tex.image.data = new Float32Array( dimension * dimension * 4 );
+			tex.image.width = dimension;
+			tex.image.height = dimension;
+
+		}
+
+		const floatArray = tex.image.data;
+
+		const u = new Vector3();
+		const v = new Vector3();
+		const m = new Matrix4();
+		const worldQuaternion = new Quaternion();
+		const eye = new Vector3();
+		const target = new Vector3();
+		const up = new Vector3();
+
+		for ( let i = 0, l = lights.length; i < l; i ++ ) {
+
+			const l = lights[ i ];
+
+			const baseIndex = i * LIGHT_PIXELS * 4;
+			let index = 0;
+
+			// sample 1
+		    // position
+			l.getWorldPosition( v );
+			floatArray[ baseIndex + ( index ++ ) ] = v.x;
+			floatArray[ baseIndex + ( index ++ ) ] = v.y;
+			floatArray[ baseIndex + ( index ++ ) ] = v.z;
+
+			// type
+			let type = RECT_AREA_LIGHT;
+			if ( l.isRectAreaLight && l.isCircular ) type = CIRC_AREA_LIGHT;
+			else if ( l.isSpotLight ) type = SPOT_LIGHT;
+			floatArray[ baseIndex + ( index ++ ) ] = type;
+
+			// sample 2
+			// color
+			floatArray[ baseIndex + ( index ++ ) ] = l.color.r;
+			floatArray[ baseIndex + ( index ++ ) ] = l.color.g;
+			floatArray[ baseIndex + ( index ++ ) ] = l.color.b;
+
+			// intensity
+			floatArray[ baseIndex + ( index ++ ) ] = l.intensity;
+
+			l.getWorldQuaternion( worldQuaternion );
+
+			if ( l.isRectAreaLight ) {
+
+				// sample 3
+				// u vector
+				u.set( l.width, 0, 0 ).applyQuaternion( worldQuaternion );
+
+				floatArray[ baseIndex + ( index ++ ) ] = u.x;
+				floatArray[ baseIndex + ( index ++ ) ] = u.y;
+				floatArray[ baseIndex + ( index ++ ) ] = u.z;
+				index ++;
+
+				// sample 4
+				// v vector
+				v.set( 0, l.height, 0 ).applyQuaternion( worldQuaternion );
+
+				floatArray[ baseIndex + ( index ++ ) ] = v.x;
+				floatArray[ baseIndex + ( index ++ ) ] = v.y;
+				floatArray[ baseIndex + ( index ++ ) ] = v.z;
+
+				// area
+				floatArray[ baseIndex + ( index ++ ) ] = u.cross( v ).length() * ( l.isCircular ? ( Math.PI / 4.0 ) : 1.0 );
+
+			} else if ( l.isSpotLight ) {
+
+				const radius = l.radius;
+				eye.setFromMatrixPosition( l.matrixWorld );
+				target.setFromMatrixPosition( l.target.matrixWorld );
+				m.lookAt( eye, target, up );
+				worldQuaternion.setFromRotationMatrix( m );
+
+				// sample 3
+				// u vector
+				u.set( 1, 0, 0 ).applyQuaternion( worldQuaternion );
+
+				floatArray[ baseIndex + ( index ++ ) ] = u.x;
+				floatArray[ baseIndex + ( index ++ ) ] = u.y;
+				floatArray[ baseIndex + ( index ++ ) ] = u.z;
+				index ++;
+
+				// sample 4
+				// v vector
+				v.set( 0, 1, 0 ).applyQuaternion( worldQuaternion );
+
+				floatArray[ baseIndex + ( index ++ ) ] = v.x;
+				floatArray[ baseIndex + ( index ++ ) ] = v.y;
+				floatArray[ baseIndex + ( index ++ ) ] = v.z;
+
+				// area
+				floatArray[ baseIndex + ( index ++ ) ] = Math.PI * radius * radius;
+
+				// sample 5
+				// radius
+				floatArray[ baseIndex + ( index ++ ) ] = radius;
+
+				// near
+				floatArray[ baseIndex + ( index ++ ) ] = l.shadow.camera.near;
+
+				// decay
+				floatArray[ baseIndex + ( index ++ ) ] = l.decay;
+
+				// distance
+				floatArray[ baseIndex + ( index ++ ) ] = l.distance;
+
+				// sample 6
+				// coneCos
+				floatArray[ baseIndex + ( index ++ ) ] = Math.cos( l.angle );
+
+				// penumbraCos
+				floatArray[ baseIndex + ( index ++ ) ] = Math.cos( l.angle * ( 1 - l.penumbra ) );
+
+				// iesProfile
+				floatArray[ baseIndex + ( index ++ ) ] = iesTextures.indexOf( l.iesTexture );
+
+			}
+
+		}
+
+		tex.needsUpdate = true;
+		this.count = lights.length;
+
+	}
+
+}
+
+function IESLamp( text ) {
+
+	const _self = this;
+
+	const textArray = text.split( '\n' );
+
+	let lineNumber = 0;
+	let line;
+
+	_self.verAngles = [ ];
+	_self.horAngles = [ ];
+
+	_self.candelaValues = [ ];
+
+	_self.tiltData = { };
+	_self.tiltData.angles = [ ];
+	_self.tiltData.mulFactors = [ ];
+
+	function textToArray( text ) {
+
+		text = text.trim(); // remove leading or trailing spaces
+		text = text.replace( /,/g, ' ' ); // replace commas with spaces
+		text = text.replace( /\s\s+/g, ' ' ); // replace white space/tabs etc by single whitespace
+
+		const array = text.split( ' ' );
+
+		return array;
+
+	}
+
+	function readArray( count, array ) {
+
+		while ( true ) {
+
+			const line = textArray[ lineNumber ++ ];
+			const lineData = textToArray( line );
+
+			for ( let i = 0; i < lineData.length; ++ i ) {
+
+				array.push( Number( lineData[ i ] ) );
+
+			}
+
+			if ( array.length === count )
+				break;
+
+		}
+
+	}
+
+	function readTilt() {
+
+		let line = textArray[ lineNumber ++ ];
+		let lineData = textToArray( line );
+
+		_self.tiltData.lampToLumGeometry = Number( lineData[ 0 ] );
+
+		line = textArray[ lineNumber ++ ];
+		lineData = textToArray( line );
+
+		_self.tiltData.numAngles = Number( lineData[ 0 ] );
+
+		readArray( _self.tiltData.numAngles, _self.tiltData.angles );
+		readArray( _self.tiltData.numAngles, _self.tiltData.mulFactors );
+
+	}
+
+	function readLampValues() {
+
+		const values = [ ];
+		readArray( 10, values );
+
+		_self.count = Number( values[ 0 ] );
+		_self.lumens = Number( values[ 1 ] );
+		_self.multiplier = Number( values[ 2 ] );
+		_self.numVerAngles = Number( values[ 3 ] );
+		_self.numHorAngles = Number( values[ 4 ] );
+		_self.gonioType = Number( values[ 5 ] );
+		_self.units = Number( values[ 6 ] );
+		_self.width = Number( values[ 7 ] );
+		_self.length = Number( values[ 8 ] );
+		_self.height = Number( values[ 9 ] );
+
+	}
+
+	function readLampFactors() {
+
+		const values = [ ];
+		readArray( 3, values );
+
+		_self.ballFactor = Number( values[ 0 ] );
+		_self.blpFactor = Number( values[ 1 ] );
+		_self.inputWatts = Number( values[ 2 ] );
+
+	}
+
+	while ( true ) {
+
+		line = textArray[ lineNumber ++ ];
+
+		if ( line.includes( 'TILT' ) ) {
+
+			break;
+
+		}
+
+	}
+
+	if ( ! line.includes( 'NONE' ) ) {
+
+		if ( line.includes( 'INCLUDE' ) ) {
+
+			readTilt();
+
+		} else {
+
+			// TODO:: Read tilt data from a file
+
+		}
+
+	}
+
+	readLampValues();
+
+	readLampFactors();
+
+	// Initialize candela value array
+	for ( let i = 0; i < _self.numHorAngles; ++ i ) {
+
+		_self.candelaValues.push( [ ] );
+
+	}
+
+	// Parse Angles
+	readArray( _self.numVerAngles, _self.verAngles );
+	readArray( _self.numHorAngles, _self.horAngles );
+
+	// Parse Candela values
+	for ( let i = 0; i < _self.numHorAngles; ++ i ) {
+
+		readArray( _self.numVerAngles, _self.candelaValues[ i ] );
+
+	}
+
+	// Calculate actual candela values, and normalize.
+	for ( let i = 0; i < _self.numHorAngles; ++ i ) {
+
+		for ( let j = 0; j < _self.numVerAngles; ++ j ) {
+
+			_self.candelaValues[ i ][ j ] *= _self.candelaValues[ i ][ j ] * _self.multiplier
+				* _self.ballFactor * _self.blpFactor;
+
+		}
+
+	}
+
+	let maxVal = - 1;
+	for ( let i = 0; i < _self.numHorAngles; ++ i ) {
+
+		for ( let j = 0; j < _self.numVerAngles; ++ j ) {
+
+			const value = _self.candelaValues[ i ][ j ];
+			maxVal = maxVal < value ? value : maxVal;
+
+		}
+
+	}
+
+	const bNormalize = true;
+	if ( bNormalize && maxVal > 0 ) {
+
+		for ( let i = 0; i < _self.numHorAngles; ++ i ) {
+
+			for ( let j = 0; j < _self.numVerAngles; ++ j ) {
+
+				_self.candelaValues[ i ][ j ] /= maxVal;
+
+			}
+
+		}
+
+	}
+
+}
+
+class IESLoader extends Loader {
+
+	_getIESValues( iesLamp ) {
+
+		const width = 360;
+		const height = 180;
+		const size = width * height;
+
+		const data = new Float32Array( size );
+
+		function interpolateCandelaValues( phi, theta ) {
+
+			let phiIndex = 0, thetaIndex = 0;
+			let startTheta = 0, endTheta = 0, startPhi = 0, endPhi = 0;
+
+			for ( let i = 0; i < iesLamp.numHorAngles - 1; ++ i ) { // numHorAngles = horAngles.length-1 because of extra padding, so this wont cause an out of bounds error
+
+				if ( theta < iesLamp.horAngles[ i + 1 ] || i == iesLamp.numHorAngles - 2 ) {
+
+					thetaIndex = i;
+					startTheta = iesLamp.horAngles[ i ];
+					endTheta = iesLamp.horAngles[ i + 1 ];
+
+					break;
+
+				}
+
+			}
+
+			for ( let i = 0; i < iesLamp.numVerAngles - 1; ++ i ) {
+
+				if ( phi < iesLamp.verAngles[ i + 1 ] || i == iesLamp.numVerAngles - 2 ) {
+
+					phiIndex = i;
+					startPhi = iesLamp.verAngles[ i ];
+					endPhi = iesLamp.verAngles[ i + 1 ];
+
+					break;
+
+				}
+
+			}
+
+			const deltaTheta = endTheta - startTheta;
+			const deltaPhi = endPhi - startPhi;
+
+			if ( deltaPhi === 0 ) // Outside range
+				return 0;
+
+			const t1 = deltaTheta === 0 ? 0 : ( theta - startTheta ) / deltaTheta;
+			const t2 = ( phi - startPhi ) / deltaPhi;
+
+			const nextThetaIndex = deltaTheta === 0 ? thetaIndex : thetaIndex + 1;
+
+			const v1 = MathUtils.lerp( iesLamp.candelaValues[ thetaIndex ][ phiIndex ], iesLamp.candelaValues[ nextThetaIndex ][ phiIndex ], t1 );
+			const v2 = MathUtils.lerp( iesLamp.candelaValues[ thetaIndex ][ phiIndex + 1 ], iesLamp.candelaValues[ nextThetaIndex ][ phiIndex + 1 ], t1 );
+			const v = MathUtils.lerp( v1, v2, t2 );
+
+			return v;
+
+		}
+
+		const startTheta = iesLamp.horAngles[ 0 ], endTheta = iesLamp.horAngles[ iesLamp.numHorAngles - 1 ];
+		for ( let i = 0; i < size; ++ i ) {
+
+			let theta = i % width;
+			const phi = Math.floor( i / width );
+
+			if ( endTheta - startTheta !== 0 && ( theta < startTheta || theta >= endTheta ) ) { // Handle symmetry for hor angles
+
+				theta %= endTheta * 2;
+				if ( theta > endTheta )
+					theta = endTheta * 2 - theta;
+
+			}
+
+			data[ i ] = interpolateCandelaValues( phi, theta );
+
+		}
+
+		return data;
+
+	}
+
+	load( url, onLoad, onProgress, onError ) {
+
+		const loader = new FileLoader( this.manager );
+		loader.setResponseType( 'text' );
+		loader.setCrossOrigin( this.crossOrigin );
+		loader.setWithCredentials( this.withCredentials );
+		loader.setPath( this.path );
+		loader.setRequestHeader( this.requestHeader );
+
+		const texture = new DataTexture( null, 360, 180, RedFormat, FloatType );
+		texture.minFilter = LinearFilter;
+		texture.magFilter = LinearFilter;
+
+		loader.load( url, text => {
+
+			const iesLamp = new IESLamp( text );
+
+			texture.image.data = this._getIESValues( iesLamp );
+			texture.needsUpdate = true;
+
+			if ( onLoad !== undefined ) {
+
+				onLoad( texture );
+
+			}
+
+		}, onProgress, onError );
+
+		return texture;
+
+	}
+
+	parse( text ) {
+
+		const iesLamp = new IESLamp( text );
+		const texture = new DataTexture( null, 360, 180, RedFormat, FloatType );
+		texture.minFilter = LinearFilter;
+		texture.magFilter = LinearFilter;
+		texture.image.data = this._getIESValues( iesLamp );
+		texture.needsUpdate = true;
+
+		return texture;
+
+	}
+
+}
+
+const prevColor = new Color();
+class IESProfilesTexture extends WebGLArrayRenderTarget {
+
+	constructor( ...args ) {
+
+		super( ...args );
+
+		const tex = this.texture;
+		tex.format = RGBAFormat;
+		tex.type = FloatType;
+		tex.minFilter = LinearFilter;
+		tex.magFilter = LinearFilter;
+		tex.wrapS = ClampToEdgeWrapping;
+		tex.wrapT = ClampToEdgeWrapping;
+		tex.generateMipmaps = false;
+
+		tex.updateFrom = ( ...args ) => {
+
+			this.updateFrom( ...args );
+
+		};
+
+		const fsQuad = new FullScreenQuad( new MeshBasicMaterial() );
+		this.fsQuad = fsQuad;
+
+		this.iesLoader = new IESLoader();
+
+	}
+
+	async updateFrom( renderer, textures ) {
+
+		// save previous renderer state
+		const prevRenderTarget = renderer.getRenderTarget();
+		const prevToneMapping = renderer.toneMapping;
+		const prevAlpha = renderer.getClearAlpha();
+		renderer.getClearColor( prevColor );
+
+		// resize the render target and ensure we don't have an empty texture
+		// render target depth must be >= 1 to avoid unbound texture error on android devices
+		const depth = textures.length || 1;
+		this.setSize( 360, 180, depth );
+		renderer.setClearColor( 0, 0 );
+		renderer.toneMapping = NoToneMapping;
+
+		// render each texture into each layer of the target
+		const fsQuad = this.fsQuad;
+		for ( let i = 0, l = depth; i < l; i ++ ) {
+
+			const texture = textures[ i ];
+			if ( texture ) {
+
+				// revert to default texture transform before rendering
+				texture.matrixAutoUpdate = false;
+				texture.matrix.identity();
+
+				fsQuad.material.map = texture;
+				fsQuad.material.transparent = true;
+
+				renderer.setRenderTarget( this, i );
+				fsQuad.render( renderer );
+
+				// restore custom texture transform
+				texture.updateMatrix();
+				texture.matrixAutoUpdate = true;
+
+			}
+
+		}
+
+		// reset the renderer
+		fsQuad.material.map = null;
+		renderer.setClearColor( prevColor, prevAlpha );
+		renderer.setRenderTarget( prevRenderTarget );
+		renderer.toneMapping = prevToneMapping;
+
+		fsQuad.dispose();
+
+	}
+
+	dispose() {
+
+		super.dispose();
+		this.fsQuad.dispose();
+
+	}
+
+}
+
 const shaderUtils = /* glsl */`
+
+	// https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_volume/README.md#attenuation
+	vec3 transmissionAttenuation( float dist, vec3 attColor, float attDist ) {
+
+		vec3 ot = - log( attColor ) / attDist;
+		return exp( - ot * dist );
+
+	}
 
 	// https://google.github.io/filament/Filament.md.html#materialsystem/diffusebrdf
 	float schlickFresnel( float cosine, float f0 ) {
@@ -1772,12 +2610,40 @@ const shaderUtils = /* glsl */`
 
 	}
 
-	// https://raytracing.github.io/books/RayTracingInOneWeekend.html#dielectrics/schlickapproximation
-	float schlickFresnelFromIor( float cosine, float iorRatio ) {
+	vec3 schlickFresnel( float cosine, vec3 f0 ) {
 
-		// Schlick approximation
-		float r_0 = pow( ( 1.0 - iorRatio ) / ( 1.0 + iorRatio ), 2.0 );
-		return schlickFresnel( cosine, r_0 );
+		return f0 + ( 1.0 - f0 ) * pow( 1.0 - cosine, 5.0 );
+
+	}
+
+	float dielectricFresnel( float cosThetaI, float eta ) {
+
+		// https://schuttejoe.github.io/post/disneybsdf/
+		float ni = eta;
+		float nt = 1.0;
+
+		// Check for total internal reflection
+		float sinThetaISq = 1.0f - cosThetaI * cosThetaI;
+		float sinThetaTSq = eta * eta * sinThetaISq;
+		if( sinThetaTSq >= 1.0 ) {
+
+			return 1.0;
+
+		}
+
+		float sinThetaT = sqrt( sinThetaTSq );
+
+		float cosThetaT = sqrt( max( 0.0, 1.0f - sinThetaT * sinThetaT ) );
+		float rParallel = ( ( nt * cosThetaI ) - ( ni * cosThetaT ) ) / ( ( nt * cosThetaI ) + ( ni * cosThetaT ) );
+		float rPerpendicular = ( ( ni * cosThetaI ) - ( nt * cosThetaT ) ) / ( ( ni * cosThetaI ) + ( nt * cosThetaT ) );
+		return ( rParallel * rParallel + rPerpendicular * rPerpendicular ) / 2.0;
+
+	}
+
+	// https://raytracing.github.io/books/RayTracingInOneWeekend.html#dielectrics/schlickapproximation
+	float iorRatioToF0( float eta ) {
+
+		return pow( ( 1.0 - eta ) / ( 1.0 + eta ), 2.0 );
 
 	}
 
@@ -1798,6 +2664,29 @@ const shaderUtils = /* glsl */`
 		vec3 ortho = normalize( cross( normal, other ) );
 		vec3 ortho2 = normalize( cross( normal, ortho ) );
 		return mat3( ortho2, ortho, normal );
+
+	}
+
+	vec3 getHalfVector( vec3 wi, vec3 wo, float eta ) {
+
+		// get the half vector - assuming if the light incident vector is on the other side
+		// of the that it's transmissive.
+		vec3 h;
+		if ( wi.z > 0.0 ) {
+
+			h = normalize( wi + wo );
+
+		} else {
+
+			// Scale by the ior ratio to retrieve the appropriate half vector
+			// From Section 2.2 on computing the transmission half vector:
+			// https://blog.selfshadow.com/publications/s2015-shading-course/burley/s2015_pbs_disney_bsdf_notes.pdf
+			h = normalize( wi + wo * eta );
+
+		}
+
+		h *= sign( h.z );
+		return h;
 
 	}
 
@@ -2001,6 +2890,43 @@ const shaderUtils = /* glsl */`
 
 	}
 
+	// An acos with input values bound to the range [-1, 1].
+	float acosSafe( float x ) {
+
+		return acos( clamp( x, -1.0, 1.0 ) );
+
+	}
+
+	float saturateCos( float val ) {
+
+		return clamp( val, 0.001, 1.0 );
+
+	}
+
+	float square( float t ) {
+
+		return t * t;
+
+	}
+
+	vec2 square( vec2 t ) {
+
+		return t * t;
+
+	}
+
+	vec3 square( vec3 t ) {
+
+		return t * t;
+
+	}
+
+	vec4 square( vec4 t ) {
+
+		return t * t;
+
+	}
+
 	// Finds the point where the ray intersects the plane defined by u and v and checks if this point
 	// falls in the bounds of the rectangle on that same plane.
 	// Plane intersection: https://lousodrome.net/blog/light/2020/07/03/intersection-of-a-ray-and-a-plane/
@@ -2033,19 +2959,39 @@ const shaderUtils = /* glsl */`
 
 	}
 
+	// Finds the point where the ray intersects the plane defined by u and v and checks if this point
+	// falls in the bounds of the circle on that same plane. See above URL for a description of the plane intersection algorithm.
+	bool intersectsCircle( vec3 position, vec3 normal, vec3 u, vec3 v, vec3 rayOrigin, vec3 rayDirection, out float dist ) {
+
+		float t = dot( position - rayOrigin, normal ) / dot( rayDirection, normal );
+
+		if ( t > EPSILON ) {
+
+			vec3 hit = rayOrigin + rayDirection * t;
+			vec3 vi = hit - position;
+
+			float a1 = dot( u, vi );
+			float a2 = dot( v, vi );
+
+			if( length( vec2( a1, a2 ) ) <= 0.5 ) {
+
+				dist = t;
+				return true;
+
+			}
+
+		}
+
+		return false;
+
+	}
+
 	// power heuristic for multiple importance sampling
 	float misHeuristic( float a, float b ) {
 
 		float aa = a * a;
 		float bb = b * b;
 		return aa / ( aa + bb );
-
-	}
-
-	// An acos with input values bound to the range [-1, 1].
-	float acosSafe( float x ) {
-
-		return acos( clamp( x, -1.0, 1.0 ) );
 
 	}
 
@@ -2105,7 +3051,7 @@ class BlurredEnvMapGenerator {
 
 		this.renderer = renderer;
 		this.pmremGenerator = new PMREMGenerator( renderer );
-		this.copyQuad = new FullScreenQuad$1( new PMREMCopyMaterial() );
+		this.copyQuad = new FullScreenQuad( new PMREMCopyMaterial() );
 		this.renderTarget = new WebGLRenderTarget( 1, 1, { type: FloatType, format: RGBAFormat } );
 
 	}
@@ -2154,7 +3100,391 @@ class BlurredEnvMapGenerator {
 		result.mapping = EquirectangularReflectionMapping;
 		result.needsUpdate = true;
 
+		// dispose of the now unneeded target
+		pmremTarget.dispose();
+
 		return result;
+
+	}
+
+}
+
+class DenoiseMaterial extends MaterialBase {
+
+	constructor( parameters ) {
+
+		super( {
+
+			blending: NoBlending,
+
+			transparent: false,
+
+			depthWrite: false,
+
+			depthTest: false,
+
+			defines: {
+
+				USE_SLIDER: 0,
+
+			},
+
+			uniforms: {
+
+				sigma: { value: 5.0 },
+				threshold: { value: 0.03 },
+				kSigma: { value: 1.0 },
+
+				map: { value: null },
+
+			},
+
+			vertexShader: /* glsl */`
+
+				varying vec2 vUv;
+
+				void main() {
+
+					vUv = uv;
+					gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+
+				}
+
+			`,
+
+			fragmentShader: /* glsl */`
+
+				//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+				//  Copyright (c) 2018-2019 Michele Morrone
+				//  All rights reserved.
+				//
+				//  https://michelemorrone.eu - https://BrutPitt.com
+				//
+				//  me@michelemorrone.eu - brutpitt@gmail.com
+				//  twitter: @BrutPitt - github: BrutPitt
+				//
+				//  https://github.com/BrutPitt/glslSmartDeNoise/
+				//
+				//  This software is distributed under the terms of the BSD 2-Clause license
+				//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+				uniform sampler2D map;
+
+				uniform float sigma;
+				uniform float threshold;
+				uniform float kSigma;
+
+				varying vec2 vUv;
+
+				#define INV_SQRT_OF_2PI 0.39894228040143267793994605993439
+				#define INV_PI 0.31830988618379067153776752674503
+
+				// Parameters:
+				//	 sampler2D tex	 - sampler image / texture
+				//	 vec2 uv		   - actual fragment coord
+				//	 float sigma  >  0 - sigma Standard Deviation
+				//	 float kSigma >= 0 - sigma coefficient
+				//		 kSigma * sigma  -->  radius of the circular kernel
+				//	 float threshold   - edge sharpening threshold
+				vec4 smartDeNoise( sampler2D tex, vec2 uv, float sigma, float kSigma, float threshold ) {
+
+					float radius = round( kSigma * sigma );
+					float radQ = radius * radius;
+
+					float invSigmaQx2 = 0.5 / ( sigma * sigma );
+					float invSigmaQx2PI = INV_PI * invSigmaQx2;
+
+					float invThresholdSqx2 = 0.5 / ( threshold * threshold );
+					float invThresholdSqrt2PI = INV_SQRT_OF_2PI / threshold;
+
+					vec4 centrPx = texture2D( tex, uv );
+					centrPx.rgb *= centrPx.a;
+
+					float zBuff = 0.0;
+					vec4 aBuff = vec4( 0.0 );
+					vec2 size = vec2( textureSize( tex, 0 ) );
+
+					vec2 d;
+					for ( d.x = - radius; d.x <= radius; d.x ++ ) {
+
+						float pt = sqrt( radQ - d.x * d.x );
+
+						for ( d.y = - pt; d.y <= pt; d.y ++ ) {
+
+							float blurFactor = exp( - dot( d, d ) * invSigmaQx2 ) * invSigmaQx2PI;
+
+							vec4 walkPx = texture2D( tex, uv + d / size );
+							walkPx.rgb *= walkPx.a;
+
+							vec4 dC = walkPx - centrPx;
+							float deltaFactor = exp( - dot( dC.rgba, dC.rgba ) * invThresholdSqx2 ) * invThresholdSqrt2PI * blurFactor;
+
+							zBuff += deltaFactor;
+							aBuff += deltaFactor * walkPx;
+
+						}
+
+					}
+
+					return aBuff / zBuff;
+
+				}
+
+				void main() {
+
+					gl_FragColor = smartDeNoise( map, vec2( vUv.x, vUv.y ), sigma, kSigma, threshold );
+					#include <tonemapping_fragment>
+					#include <encodings_fragment>
+					#include <premultiplied_alpha_fragment>
+
+				}
+
+			`
+
+		} );
+
+		this.setValues( parameters );
+
+	}
+
+}
+
+class GraphMaterial extends MaterialBase {
+
+	get graphFunctionSnippet() {
+
+		return this._graphFunctionSnippet;
+
+	}
+
+	set graphFunctionSnippet( v ) {
+
+		this._graphFunctionSnippet = v;
+
+	}
+
+	constructor( parameters ) {
+
+		super( {
+
+			blending: NoBlending,
+
+			transparent: false,
+
+			depthWrite: false,
+
+			depthTest: false,
+
+			defines: {
+
+				USE_SLIDER: 0,
+
+			},
+
+			uniforms: {
+
+				dim: { value: true },
+				thickness: { value: 1 },
+				graphCount: { value: 4 },
+				graphDisplay: { value: new Vector4( 1.0, 1.0, 1.0, 1.0 ) },
+				overlay: { value: true },
+				xRange: { value: new Vector2( - 2.0, 2.0 ) },
+				yRange: { value: new Vector2( - 2.0, 2.0 ) },
+				colors: { value: [
+					new Color( 0xe91e63 ).convertSRGBToLinear(),
+					new Color( 0x4caf50 ).convertSRGBToLinear(),
+					new Color( 0x03a9f4 ).convertSRGBToLinear(),
+					new Color( 0xffc107 ).convertSRGBToLinear(),
+				] },
+
+			},
+
+			vertexShader: /* glsl */`
+
+				varying vec2 vUv;
+
+				void main() {
+
+					vUv = uv;
+					gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+
+				}
+
+			`,
+
+			fragmentShader: /* glsl */`
+				varying vec2 vUv;
+				uniform bool overlay;
+				uniform bool dim;
+				uniform bvec4 graphDisplay;
+				uniform float graphCount;
+				uniform float thickness;
+				uniform vec2 xRange;
+				uniform vec2 yRange;
+				uniform vec3 colors[ 4 ];
+
+				__FUNCTION_CONTENT__
+
+				float map( float _min, float _max, float v ) {
+
+					float len = _max - _min;
+					return _min + len * v;
+
+				}
+
+				vec3 getBackground( vec2 point, float steepness ) {
+
+					vec2 pw = fwidth( point );
+					vec2 halfWidth = pw * 0.5;
+
+					// x, y axes
+					vec2 distToZero = smoothstep(
+						- halfWidth * 0.5,
+						halfWidth * 0.5,
+						abs( point.xy ) - pw
+					);
+
+					// 1 unit markers
+					vec2 temp;
+					vec2 modAxis = abs( modf( point + vec2( 0.5 ), temp ) ) - 0.5;
+					vec2 distToAxis = smoothstep(
+						- halfWidth,
+						halfWidth,
+						abs( modAxis.xy ) - pw * 0.5
+					);
+
+					// if we're at a chart boundary then remove the artifacts
+					if ( abs( pw.y ) > steepness * 0.5 ) {
+
+						distToZero.y = 1.0;
+						distToAxis.y = 1.0;
+
+					}
+
+					// mix colors into a background color
+					float axisIntensity = 1.0 - min( distToZero.x, distToZero.y );
+					float markerIntensity = 1.0 - min( distToAxis.x, distToAxis.y );
+
+					vec3 markerColor = mix( vec3( 0.005 ), vec3( 0.05 ), markerIntensity );
+					vec3 backgroundColor = mix( markerColor, vec3( 0.2 ), axisIntensity );
+					return backgroundColor;
+
+				}
+
+				void main() {
+
+					// from uniforms
+					float sectionCount = overlay ? 1.0 : graphCount;
+					float yWidth = abs( yRange.y - yRange.x );
+
+					// separate into sections
+					float _section;
+					float sectionY = modf( sectionCount * vUv.y, _section );
+					int section = int( sectionCount - _section - 1.0 );
+
+					// get the current point
+					vec2 point = vec2(
+						map( xRange.x, xRange.y, vUv.x ),
+						map( yRange.x, yRange.y, sectionY )
+					);
+
+					// get the results
+					vec4 result = graphFunction( point.x );
+					vec4 delta = result - vec4( point.y );
+					vec4 halfDdf = fwidth( delta ) * 0.5;
+					if ( fwidth( point.y ) > yWidth * 0.5 ) {
+
+						halfDdf = vec4( 0.0 );
+
+					}
+
+					// graph display intensity
+					vec4 graph = smoothstep( - halfDdf, halfDdf, abs( delta ) - thickness * halfDdf );
+
+					// initialize the background
+					gl_FragColor.rgb = getBackground( point, yWidth );
+					gl_FragColor.a = 1.0;
+
+					if ( dim && ( point.x < 0.0 || point.y < 0.0 ) ) {
+
+						graph = mix(
+							vec4( 1.0 ),
+							graph,
+							0.05
+						);
+
+					}
+
+					// color the charts
+					if ( sectionCount > 1.0 ) {
+
+						if ( graphDisplay[ section ] ) {
+
+							gl_FragColor.rgb = mix(
+								colors[ section ],
+								gl_FragColor.rgb,
+								graph[ section ]
+							);
+
+						}
+
+					} else {
+
+						for ( int i = 0; i < int( graphCount ); i ++ ) {
+
+							if ( graphDisplay[ i ] ) {
+
+								gl_FragColor.rgb = mix(
+									colors[ i ],
+									gl_FragColor.rgb,
+									graph[ i ]
+								);
+
+							}
+
+						}
+
+					}
+
+					#include <encodings_fragment>
+
+				}
+
+			`
+
+		} );
+
+
+		this._graphFunctionSnippet = /* glsl */`
+			vec4 graphFunctionSnippet( float x ) {
+
+				return vec4(
+					sin( x * 3.1415926535 ),
+					cos( x ),
+					0.0,
+					0.0
+				);
+
+			}
+		`;
+
+		this.setValues( parameters );
+
+	}
+
+	onBeforeCompile( shader ) {
+
+		shader.fragmentShader = shader.fragmentShader.replace(
+			'__FUNCTION_CONTENT__',
+			this._graphFunctionSnippet,
+		);
+		return shader;
+
+	}
+
+	customProgramCacheKey() {
+
+		return this._graphFunctionSnippet;
 
 	}
 
@@ -2177,7 +3507,9 @@ const shaderMaterialStructs = /* glsl */ `
 		sampler2D marginalWeights;
 		sampler2D conditionalWeights;
 		sampler2D map;
-		sampler2D totalSum;
+
+		float totalSumWhole;
+		float totalSumDecimal;
 
 	};
 
@@ -2203,6 +3535,30 @@ const shaderMaterialStructs = /* glsl */ `
 		int normalMap;
 		vec2 normalScale;
 
+		float clearcoat;
+		int clearcoatMap;
+		int clearcoatNormalMap;
+		vec2 clearcoatNormalScale;
+		float clearcoatRoughness;
+		int clearcoatRoughnessMap;
+
+		int iridescenceMap;
+		int iridescenceThicknessMap;
+		float iridescence;
+		float iridescenceIor;
+		float iridescenceThicknessMinimum;
+		float iridescenceThicknessMaximum;
+
+		vec3 specularColor;
+		int specularColorMap;
+
+		float specularIntensity;
+		int specularIntensityMap;
+		bool thinFilm;
+
+		vec3 attenuationColor;
+		float attenuationDistance;
+
 		int alphaMap;
 
 		bool castShadow;
@@ -2212,12 +3568,29 @@ const shaderMaterialStructs = /* glsl */ `
 		float side;
 		bool matte;
 
+		vec3 sheenColor;
+		int sheenColorMap;
+		float sheenRoughness;
+		int sheenRoughnessMap;
+
+		bool vertexColors;
+		bool transparent;
+
 		mat3 mapTransform;
 		mat3 metalnessMapTransform;
 		mat3 roughnessMapTransform;
 		mat3 transmissionMapTransform;
 		mat3 emissiveMapTransform;
 		mat3 normalMapTransform;
+		mat3 clearcoatMapTransform;
+		mat3 clearcoatNormalMapTransform;
+		mat3 clearcoatRoughnessMapTransform;
+		mat3 sheenColorMapTransform;
+		mat3 sheenRoughnessMapTransform;
+		mat3 iridescenceMapTransform;
+		mat3 iridescenceThicknessMapTransform;
+		mat3 specularColorMapTransform;
+		mat3 specularIntensityMapTransform;
 
 	};
 
@@ -2238,7 +3611,7 @@ const shaderMaterialStructs = /* glsl */ `
 
 	Material readMaterialInfo( sampler2D tex, uint index ) {
 
-		uint i = index * 19u;
+		uint i = index * 45u;
 
 		vec4 s0 = texelFetch1D( tex, i + 0u );
 		vec4 s1 = texelFetch1D( tex, i + 1u );
@@ -2247,6 +3620,14 @@ const shaderMaterialStructs = /* glsl */ `
 		vec4 s4 = texelFetch1D( tex, i + 4u );
 		vec4 s5 = texelFetch1D( tex, i + 5u );
 		vec4 s6 = texelFetch1D( tex, i + 6u );
+		vec4 s7 = texelFetch1D( tex, i + 7u );
+		vec4 s8 = texelFetch1D( tex, i + 8u );
+		vec4 s9 = texelFetch1D( tex, i + 9u );
+		vec4 s10 = texelFetch1D( tex, i + 10u );
+		vec4 s11 = texelFetch1D( tex, i + 11u );
+		vec4 s12 = texelFetch1D( tex, i + 12u );
+		vec4 s13 = texelFetch1D( tex, i + 13u );
+		vec4 s14 = texelFetch1D( tex, i + 14u );
 
 		Material m;
 		m.color = s0.rgb;
@@ -2268,23 +3649,63 @@ const shaderMaterialStructs = /* glsl */ `
 		m.normalMap = int( round( s4.r ) );
 		m.normalScale = s4.gb;
 
-		m.alphaMap = int( round( s4.a ) );
+		m.clearcoat = s4.a;
+		m.clearcoatMap = int( round( s5.r ) );
+		m.clearcoatRoughness = s5.g;
+		m.clearcoatRoughnessMap = int( round( s5.b ) );
+		m.clearcoatNormalMap = int( round( s5.a ) );
+		m.clearcoatNormalScale = s6.rg;
 
-		m.opacity = s5.r;
-		m.alphaTest = s5.g;
-		m.side = s5.b;
-		m.matte = bool( s5.a );
+		m.sheenColor = s7.rgb;
+		m.sheenColorMap = int( round( s7.a ) );
+		m.sheenRoughness = s8.r;
+		m.sheenRoughnessMap = int( round( s8.g ) );
 
-		m.castShadow = ! bool( s6.r );
+		m.iridescenceMap = int( round( s8.b ) );
+		m.iridescenceThicknessMap = int( round( s8.a ) );
+		m.iridescence = s9.r;
+		m.iridescenceIor = s9.g;
+		m.iridescenceThicknessMinimum = s9.b;
+		m.iridescenceThicknessMaximum = s9.a;
 
-		uint firstTextureTransformIdx = i + 7u;
+		m.specularColor = s10.rgb;
+		m.specularColorMap = int( round( s10.a ) );
 
-		m.mapTransform = m.map == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx);
+		m.specularIntensity = s11.r;
+		m.specularIntensityMap = int( round( s11.g ) );
+		m.thinFilm = bool( s11.b );
+
+		m.attenuationColor = s12.rgb;
+		m.attenuationDistance = s12.a;
+
+		m.alphaMap = int( round( s13.r ) );
+
+		m.opacity = s13.g;
+		m.alphaTest = s13.b;
+		m.side = s13.a;
+
+		m.matte = bool( s14.r );
+		m.castShadow = ! bool( s14.g );
+		m.vertexColors = bool( s14.b );
+		m.transparent = bool( s14.a );
+
+		uint firstTextureTransformIdx = i + 15u;
+
+		m.mapTransform = m.map == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx );
 		m.metalnessMapTransform = m.metalnessMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 2u );
 		m.roughnessMapTransform = m.roughnessMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 4u );
 		m.transmissionMapTransform = m.transmissionMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 6u );
 		m.emissiveMapTransform = m.emissiveMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 8u );
 		m.normalMapTransform = m.normalMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 10u );
+		m.clearcoatMapTransform = m.clearcoatMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 12u );
+		m.clearcoatNormalMapTransform = m.clearcoatNormalMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 14u );
+		m.clearcoatRoughnessMapTransform = m.clearcoatRoughnessMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 16u );
+		m.sheenColorMapTransform = m.sheenColorMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 18u );
+		m.sheenRoughnessMapTransform = m.sheenRoughnessMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 20u );
+		m.iridescenceMapTransform = m.iridescenceMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 22u );
+		m.iridescenceThicknessMapTransform = m.iridescenceThicknessMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 24u );
+		m.specularColorMapTransform = m.specularColorMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 26u );
+		m.specularIntensityMapTransform = m.specularIntensityMap == - 1 ? mat3( 0 ) : readTextureTransform( tex, firstTextureTransformIdx + 28u );
 
 		return m;
 
@@ -2293,9 +3714,22 @@ const shaderMaterialStructs = /* glsl */ `
 `;
 
 const shaderLightStruct = /* glsl */ `
+
+	#define RECT_AREA_LIGHT_TYPE 0
+	#define CIRC_AREA_LIGHT_TYPE 1
+	#define SPOT_LIGHT_TYPE 2
+
+	struct LightsInfo {
+
+		sampler2D tex;
+		uint count;
+
+	};
+
 	struct Light {
 
 		vec3 position;
+		int type;
 
 		vec3 color;
 		float intensity;
@@ -2304,11 +3738,20 @@ const shaderLightStruct = /* glsl */ `
 		vec3 v;
 		float area;
 
+		// spot light fields
+		float radius;
+		float near;
+		float decay;
+		float distance;
+		float coneCos;
+		float penumbraCos;
+		int iesProfile;
+
 	};
 
 	Light readLightInfo( sampler2D tex, uint index ) {
 
-		uint i = index * 4u;
+		uint i = index * 6u;
 
 		vec4 s0 = texelFetch1D( tex, i + 0u );
 		vec4 s1 = texelFetch1D( tex, i + 1u );
@@ -2317,6 +3760,7 @@ const shaderLightStruct = /* glsl */ `
 
 		Light l;
 		l.position = s0.rgb;
+		l.type = int( round( s0.a ) );
 
 		l.color = s1.rgb;
 		l.intensity = s1.a;
@@ -2325,9 +3769,46 @@ const shaderLightStruct = /* glsl */ `
 		l.v = s3.rgb;
 		l.area = s3.a;
 
+		if ( l.type == SPOT_LIGHT_TYPE ) {
+
+			vec4 s4 = texelFetch1D( tex, i + 4u );
+			vec4 s5 = texelFetch1D( tex, i + 5u );
+			l.radius = s4.r;
+			l.near = s4.g;
+			l.decay = s4.b;
+			l.distance = s4.a;
+
+			l.coneCos = s5.r;
+			l.penumbraCos = s5.g;
+			l.iesProfile = int( round ( s5.b ) );
+
+		}
+
 		return l;
 
 	}
+
+	struct SpotLight {
+
+		vec3 position;
+		int type;
+
+		vec3 color;
+		float intensity;
+
+		vec3 u;
+		vec3 v;
+		float area;
+
+		float radius;
+		float near;
+		float decay;
+		float distance;
+		float coneCos;
+		float penumbraCos;
+		int iesProfile;
+
+	};
 
 `;
 
@@ -2373,7 +3854,7 @@ vec3 ggxDirection( vec3 incidentDir, float roughnessX, float roughnessY, float r
 
 // Below are PDF and related functions for use in a Monte Carlo path tracer
 // as specified in Appendix B of the following paper
-// See equation (2) from reference [2]
+// See equation (34) from reference [0]
 float ggxLamda( float theta, float roughness ) {
 
 	float tanTheta = tan( theta );
@@ -2385,7 +3866,7 @@ float ggxLamda( float theta, float roughness ) {
 
 }
 
-// See equation (2) from reference [2]
+// See equation (34) from reference [0]
 float ggxShadowMaskG1( float theta, float roughness ) {
 
 	return 1.0 / ( 1.0 + ggxLamda( theta, roughness ) );
@@ -2401,9 +3882,9 @@ float ggxShadowMaskG2( vec3 wi, vec3 wo, float roughness ) {
 
 }
 
+// See equation (33) from reference [0]
 float ggxDistribution( vec3 halfVector, float roughness ) {
 
-	// See equation (33) from reference [0]
 	float a2 = roughness * roughness;
 	a2 = max( EPSILON, a2 );
 	float cosTheta = halfVector.z;
@@ -2417,14 +3898,6 @@ float ggxDistribution( vec3 halfVector, float roughness ) {
 
 	float denom = PI * cosTheta4 * pow( a2 + tanTheta2, 2.0 );
 	return ( a2 / denom );
-
-	// See equation (1) from reference [2]
-	// const { x, y, z } = halfVector;
-	// const a2 = roughness * roughness;
-	// const mult = x * x / a2 + y * y / a2 + z * z;
-	// const mult2 = mult * mult;
-
-	// return 1.0 / Math.PI * a2 * mult2;
 
 }
 
@@ -2440,6 +3913,246 @@ float ggxPDF( vec3 wi, vec3 halfVector, float roughness ) {
 }
 `;
 
+const shaderSheenFunctions = /* glsl */`
+
+// See equation (2) in http://www.aconty.com/pdf/s2017_pbs_imageworks_sheen.pdf
+float velvetD( float cosThetaH, float roughness ) {
+
+	float alpha = max( roughness, 0.07 );
+	alpha = alpha * alpha;
+
+	float invAlpha = 1.0 / alpha;
+
+	float sqrCosThetaH = cosThetaH * cosThetaH;
+	float sinThetaH = max( 1.0 - sqrCosThetaH, 0.001 );
+
+	return ( 2.0 + invAlpha ) * pow( sinThetaH, 0.5 * invAlpha ) / ( 2.0 * PI );
+
+}
+
+float velvetParamsInterpolate( int i, float oneMinusAlphaSquared ) {
+
+	const float p0[5] = float[5]( 25.3245, 3.32435, 0.16801, -1.27393, -4.85967 );
+	const float p1[5] = float[5]( 21.5473, 3.82987, 0.19823, -1.97760, -4.32054 );
+
+	return mix( p1[i], p0[i], oneMinusAlphaSquared );
+
+}
+
+float velvetL( float x, float alpha ) {
+
+	float oneMinusAlpha = 1.0 - alpha;
+	float oneMinusAlphaSquared = oneMinusAlpha * oneMinusAlpha;
+
+	float a = velvetParamsInterpolate( 0, oneMinusAlphaSquared );
+	float b = velvetParamsInterpolate( 1, oneMinusAlphaSquared );
+	float c = velvetParamsInterpolate( 2, oneMinusAlphaSquared );
+	float d = velvetParamsInterpolate( 3, oneMinusAlphaSquared );
+	float e = velvetParamsInterpolate( 4, oneMinusAlphaSquared );
+
+	return a / ( 1.0 + b * pow( abs( x ), c ) ) + d * x + e;
+
+}
+
+// See equation (3) in http://www.aconty.com/pdf/s2017_pbs_imageworks_sheen.pdf
+float velvetLambda( float cosTheta, float alpha ) {
+
+	return abs( cosTheta ) < 0.5 ? exp( velvetL( cosTheta, alpha ) ) : exp( 2.0 * velvetL( 0.5, alpha ) - velvetL( 1.0 - cosTheta, alpha ) );
+
+}
+
+// See Section 3, Shadowing Term, in http://www.aconty.com/pdf/s2017_pbs_imageworks_sheen.pdf
+float velvetG( float cosThetaO, float cosThetaI, float roughness ) {
+
+	float alpha = max( roughness, 0.07 );
+	alpha = alpha * alpha;
+
+	return 1.0 / ( 1.0 + velvetLambda( cosThetaO, alpha ) + velvetLambda( cosThetaI, alpha ) );
+
+}
+
+float directionalAlbedoSheen( float cosTheta, float alpha ) {
+
+	cosTheta = saturate( cosTheta );
+
+	float c = 1.0 - cosTheta;
+	float c3 = c * c * c;
+
+	return 0.65584461 * c3 + 1.0 / ( 4.16526551 + exp( -7.97291361 * sqrt( alpha ) + 6.33516894 ) );
+
+}
+
+float sheenAlbedoScaling( vec3 wo, vec3 wi, SurfaceRec surf ) {
+
+	float alpha = max( surf.sheenRoughness, 0.07 );
+	alpha = alpha * alpha;
+
+	float maxSheenColor = max( max( surf.sheenColor.r, surf.sheenColor.g ), surf.sheenColor.b );
+
+	float eWo = directionalAlbedoSheen( saturateCos( wo.z ), alpha );
+	float eWi = directionalAlbedoSheen( saturateCos( wi.z ), alpha );
+
+	return min( 1.0 - maxSheenColor * eWo, 1.0 - maxSheenColor * eWi );
+
+}
+
+// See Section 5, Layering, in http://www.aconty.com/pdf/s2017_pbs_imageworks_sheen.pdf
+float sheenAlbedoScaling( vec3 wo, SurfaceRec surf ) {
+
+	float alpha = max( surf.sheenRoughness, 0.07 );
+	alpha = alpha * alpha;
+
+	float maxSheenColor = max( max( surf.sheenColor.r, surf.sheenColor.g ), surf.sheenColor.b );
+
+	float eWo = directionalAlbedoSheen( saturateCos( wo.z ), alpha );
+
+	return 1.0 - maxSheenColor * eWo;
+
+}
+
+`;
+
+const shaderIridescenceFunctions = /* glsl */`
+
+// XYZ to sRGB color space
+const mat3 XYZ_TO_REC709 = mat3(
+	 3.2404542, -0.9692660,  0.0556434,
+	-1.5371385,  1.8760108, -0.2040259,
+	-0.4985314,  0.0415560,  1.0572252
+);
+
+vec3 fresnel0ToIor( vec3 fresnel0 ) {
+
+	vec3 sqrtF0 = sqrt( fresnel0 );
+	return ( vec3( 1.0 ) + sqrtF0 ) / ( vec3( 1.0 ) - sqrtF0 );
+
+}
+
+// Conversion FO/IOR
+vec3 iorToFresnel0( vec3 transmittedIor, float incidentIor ) {
+
+	return square( ( transmittedIor - vec3( incidentIor ) ) / ( transmittedIor + vec3( incidentIor ) ) );
+
+}
+
+// ior is a value between 1.0 and 3.0. 1.0 is air interface
+float iorToFresnel0( float transmittedIor, float incidentIor ) {
+
+	return square( ( transmittedIor - incidentIor ) / ( transmittedIor + incidentIor ) );
+
+}
+
+// Fresnel equations for dielectric/dielectric interfaces. See https://belcour.github.io/blog/research/2017/05/01/brdf-thin-film.html
+vec3 evalSensitivity( float OPD, vec3 shift ) {
+
+	float phase = 2.0 * PI * OPD * 1.0e-9;
+
+	vec3 val = vec3( 5.4856e-13, 4.4201e-13, 5.2481e-13 );
+	vec3 pos = vec3( 1.6810e+06, 1.7953e+06, 2.2084e+06 );
+	vec3 var = vec3( 4.3278e+09, 9.3046e+09, 6.6121e+09 );
+
+	vec3 xyz = val * sqrt( 2.0 * PI * var ) * cos( pos * phase + shift ) * exp( - square( phase ) * var );
+	xyz.x += 9.7470e-14 * sqrt( 2.0 * PI * 4.5282e+09 ) * cos( 2.2399e+06 * phase + shift[ 0 ] ) * exp( - 4.5282e+09 * square( phase ) );
+	xyz /= 1.0685e-7;
+
+	vec3 srgb = XYZ_TO_REC709 * xyz;
+	return srgb;
+
+}
+
+// See Section 4. Analytic Spectral Integration, A Practical Extension to Microfacet Theory for the Modeling of Varying Iridescence, https://hal.archives-ouvertes.fr/hal-01518344/document
+vec3 evalIridescence( float outsideIOR, float eta2, float cosTheta1, float thinFilmThickness, vec3 baseF0 ) {
+
+	vec3 I;
+
+	// Force iridescenceIor -> outsideIOR when thinFilmThickness -> 0.0
+	float iridescenceIor = mix( outsideIOR, eta2, smoothstep( 0.0, 0.03, thinFilmThickness ) );
+
+	// Evaluate the cosTheta on the base layer (Snell law)
+	float sinTheta2Sq = square( outsideIOR / iridescenceIor ) * ( 1.0 - square( cosTheta1 ) );
+
+	// Handle TIR:
+	float cosTheta2Sq = 1.0 - sinTheta2Sq;
+	if ( cosTheta2Sq < 0.0 ) {
+
+		return vec3( 1.0 );
+
+	}
+
+	float cosTheta2 = sqrt( cosTheta2Sq );
+
+	// First interface
+	float R0 = iorToFresnel0( iridescenceIor, outsideIOR );
+	float R12 = schlickFresnel( cosTheta1, R0 );
+	float R21 = R12;
+	float T121 = 1.0 - R12;
+	float phi12 = 0.0;
+	if ( iridescenceIor < outsideIOR ) {
+
+		phi12 = PI;
+
+	}
+	float phi21 = PI - phi12;
+
+	// Second interface
+	vec3 baseIOR = fresnel0ToIor( clamp( baseF0, 0.0, 0.9999 ) ); // guard against 1.0
+	vec3 R1 = iorToFresnel0( baseIOR, iridescenceIor );
+	vec3 R23 = schlickFresnel( cosTheta2, R1 );
+	vec3 phi23 = vec3( 0.0 );
+	if ( baseIOR[0] < iridescenceIor ) {
+
+		phi23[ 0 ] = PI;
+
+	}
+	if ( baseIOR[1] < iridescenceIor ) {
+
+		phi23[ 1 ] = PI;
+
+	}
+	if ( baseIOR[2] < iridescenceIor ) {
+
+		phi23[ 2 ] = PI;
+
+	}
+
+	// Phase shift
+	float OPD = 2.0 * iridescenceIor * thinFilmThickness * cosTheta2;
+	vec3 phi = vec3( phi21 ) + phi23;
+
+	// Compound terms
+	vec3 R123 = clamp( R12 * R23, 1e-5, 0.9999 );
+	vec3 r123 = sqrt( R123 );
+	vec3 Rs = square( T121 ) * R23 / ( vec3( 1.0 ) - R123 );
+
+	// Reflectance term for m = 0 (DC term amplitude)
+	vec3 C0 = R12 + Rs;
+	I = C0;
+
+	// Reflectance term for m > 0 (pairs of diracs)
+	vec3 Cm = Rs - T121;
+	for ( int m = 1; m <= 2; ++ m )
+	{
+		Cm *= r123;
+		vec3 Sm = 2.0 * evalSensitivity( float( m ) * OPD, float( m ) * phi );
+		I += Cm * Sm;
+	}
+
+	// Since out of gamut colors might be produced, negative color values are clamped to 0.
+	return max( I, vec3( 0.0 ) );
+}
+
+`;
+
+/*
+wi     : incident vector or light vector (pointing toward the light)
+wo     : outgoing vector or view vector (pointing towards the camera)
+wh     : computed half vector from wo and wi
+Eval   : Get the color and pdf for a direction
+Sample : Get the direction, color, and pdf for a sample
+eta    : Greek character used to denote the "ratio of ior"
+f0     : Amount of light reflected when looking at a surface head on - "fresnel 0"
+*/
+
 const shaderMaterialSampling = /* glsl */`
 
 struct SurfaceRec {
@@ -2452,24 +4165,70 @@ struct SurfaceRec {
 	vec3 color;
 	vec3 emission;
 	float transmission;
+	bool thinFilm;
 	float ior;
+	float eta;
+	float f0;
+	float clearcoat;
+	float clearcoatRoughness;
+	float filteredClearcoatRoughness;
+	vec3 sheenColor;
+	float sheenRoughness;
+	float iridescence;
+	float iridescenceIor;
+	float iridescenceThickness;
+	vec3 specularColor;
+	float specularIntensity;
+	vec3 attenuationColor;
+	float attenuationDistance;
 };
 
 struct SampleRec {
 	float specularPdf;
 	float pdf;
 	vec3 direction;
+	vec3 clearcoatDirection;
 	vec3 color;
 };
 
 ${ shaderGGXFunctions }
+${ shaderSheenFunctions }
+${ shaderIridescenceFunctions }
+
+float disneyFresnel( SurfaceRec surf, vec3 wo, vec3 wi, vec3 wh ) {
+
+	float dotHV = dot( wo, wh );
+	float dotHL = dot( wi, wh );
+
+	// TODO: some model-viewer test models look better when surf.eta is set to a non 1.5 eta here here?
+	// and the furnace test seems to pass when it === 1.0
+	// float dielectricFresnel = dielectricFresnel( abs( dotHV ), surf.eta );
+	float dielectricFresnel = dielectricFresnel( abs( dotHV ), 1.0 / 1.1 );
+	float metallicFresnel = schlickFresnel( dotHL, surf.f0 );
+
+	return mix( dielectricFresnel, metallicFresnel, surf.metalness );
+
+}
 
 // diffuse
-float diffusePDF( vec3 wo, vec3 wi, SurfaceRec surf ) {
+float diffuseEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRec surf, out vec3 color ) {
 
-	// https://raytracing.github.io/books/RayTracingTheRestOfYourLife.html#lightscattering/thescatteringpdf
-	float cosValue = wi.z;
-	return cosValue / PI;
+	// https://schuttejoe.github.io/post/disneybsdf/
+	float fl = schlickFresnel( wi.z, 0.0 );
+	float fv = schlickFresnel( wo.z, 0.0 );
+
+	float metalFactor = ( 1.0 - surf.metalness );
+	float transFactor = ( 1.0 - surf.transmission );
+	float rr = 0.5 + 2.0 * surf.roughness * fl * fl;
+	float retro = rr * ( fl + fv + fl * fv * ( rr - 1.0f ) );
+	float lambert = ( 1.0f - 0.5f * fl ) * ( 1.0f - 0.5f * fv );
+
+	// TODO: subsurface approx?
+
+	float FM = disneyFresnel( surf, wo, wi, wh );
+
+	color = ( 1.0 - FM ) * transFactor * metalFactor * wi.z * surf.color * ( retro + lambert ) / PI;
+	return wi.z / PI;
 
 }
 
@@ -2483,24 +4242,43 @@ vec3 diffuseDirection( vec3 wo, SurfaceRec surf ) {
 
 }
 
-vec3 diffuseColor( vec3 wo, vec3 wi, SurfaceRec surf ) {
-
-	// TODO: scale by 1 - F here
-	// note on division by PI
-	// https://seblagarde.wordpress.com/2012/01/08/pi-or-not-to-pi-in-game-lighting-equation/
-	float metalFactor = ( 1.0 - surf.metalness ) * wi.z / ( PI * PI );
-	float transmissionFactor = 1.0 - surf.transmission;
-	return surf.color * metalFactor * transmissionFactor;
-
-}
-
 // specular
-float specularPDF( vec3 wo, vec3 wi, SurfaceRec surf ) {
+float specularEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRec surf, out vec3 color ) {
 
-	// See equation (27) in http://jcgt.org/published/0003/02/03/
+	// if roughness is set to 0 then D === NaN which results in black pixels
+	float metalness = surf.metalness;
 	float filteredRoughness = surf.filteredRoughness;
-	vec3 halfVector = getHalfVector( wi, wo );
-	return ggxPDF( wo, halfVector, filteredRoughness ) / ( 4.0 * dot( wi, halfVector ) );
+
+	float eta = surf.eta;
+	float f0 = surf.f0;
+	float G = ggxShadowMaskG2( wi, wo, filteredRoughness );
+	float D = ggxDistribution( wh, filteredRoughness );
+	float FM = disneyFresnel( surf, wo, wi, wh );
+	float cosTheta = min( wo.z, 1.0 );
+	float sinTheta = sqrt( 1.0 - cosTheta * cosTheta );
+	bool cannotRefract = eta * sinTheta > 1.0;
+	if ( cannotRefract ) {
+
+		FM = 1.0;
+
+	}
+
+	vec3 metalColor = surf.color;
+	vec3 dielectricColor = f0 * surf.specularColor;
+	vec3 specColor = mix( dielectricColor, metalColor, surf.metalness );
+
+	vec3 iridescenceF = evalIridescence( 1.0, surf.iridescenceIor, dot( wi, wh ), surf.iridescenceThickness, vec3( f0 ) );
+	vec3 iridescenceMix = mix( vec3( FM ), iridescenceF, surf.iridescence );
+	vec3 F = mix( specColor, vec3( 1.0 ), iridescenceMix );
+
+	color = mix( surf.specularIntensity, 1.0, surf.metalness ) * wi.z * F * G * D / ( 4.0 * abs( wi.z * wo.z ) );
+
+	// PDF
+	// See 14.1.1 Microfacet BxDFs in https://www.pbr-book.org/
+	float incidentTheta = acos( wo.z );
+	float G1 = ggxShadowMaskG1( incidentTheta, filteredRoughness );
+	float ggxPdf = D * G1 * max( 0.0, abs( dot( wo, wh ) ) ) / abs ( wo.z );
+	return ggxPdf / ( 4.0 * dot( wo, wh ) );
 
 }
 
@@ -2521,103 +4299,64 @@ vec3 specularDirection( vec3 wo, SurfaceRec surf ) {
 
 }
 
-vec3 specularColor( vec3 wo, vec3 wi, SurfaceRec surf ) {
 
-	// if roughness is set to 0 then D === NaN which results in black pixels
-	float metalness = surf.metalness;
-	float ior = surf.ior;
-	bool frontFace = surf.frontFace;
-	float filteredRoughness = surf.filteredRoughness;
-
-	vec3 halfVector = getHalfVector( wo, wi );
-	float iorRatio = frontFace ? 1.0 / ior : ior;
-	float G = ggxShadowMaskG2( wi, wo, filteredRoughness );
-	float D = ggxDistribution( halfVector, filteredRoughness );
-
-	float F = schlickFresnelFromIor( dot( wi, halfVector ), iorRatio );
-	float cosTheta = min( wo.z, 1.0 );
-	float sinTheta = sqrt( 1.0 - cosTheta * cosTheta );
-	bool cannotRefract = iorRatio * sinTheta > 1.0;
-	if ( cannotRefract ) {
-
-		F = 1.0;
-
-	}
-
-	vec3 color = mix( vec3( 1.0 ), surf.color, metalness );
-	color = mix( color, vec3( 1.0 ), F );
-	color *= G * D / ( 4.0 * abs( wi.z * wo.z ) );
-	color *= mix( F, 1.0, metalness );
-	color *= wi.z; // scale the light by the direction the light is coming in from
-
-	return color;
-
-}
-
-/*
 // transmission
-function transmissionPDF( wo, wi, material, surf ) {
+/*
+float transmissionEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRec surf, out vec3 color ) {
 
 	// See section 4.2 in https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf
 
-	const { roughness, ior } = material;
-	const { frontFace } = hit;
-	const ratio = frontFace ? ior : 1 / ior;
-	const minRoughness = Math.max( roughness, MIN_ROUGHNESS );
+	float filteredRoughness = surf.filteredRoughness;
+	float eta = surf.eta;
+	bool frontFace = surf.frontFace;
+	bool thinFilm = surf.thinFilm;
 
-	halfVector.set( 0, 0, 0 ).addScaledVector( wi, ratio ).addScaledVector( wo, 1.0 ).normalize().multiplyScalar( - 1 );
+	vec3 col = thinFilm || frontFace ? surf.color : vec3( 1.0 );
+	color = surf.transmission * col;
 
-	const denom = Math.pow( ratio * halfVector.dot( wi ) + 1.0 * halfVector.dot( wo ), 2.0 );
-	return ggxPDF( wo, halfVector, minRoughness ) / denom;
+	float denom = pow( eta * dot( wi, wh ) + dot( wo, wh ), 2.0 );
+	return ggxPDF( wo, wh, filteredRoughness ) / denom;
 
 }
 
-function transmissionDirection( wo, hit, material, lightDirection ) {
+vec3 transmissionDirection( vec3 wo, SurfaceRec surf ) {
 
-	const { roughness, ior } = material;
-	const { frontFace } = hit;
-	const ratio = frontFace ? 1 / ior : ior;
-	const minRoughness = Math.max( roughness, MIN_ROUGHNESS );
+	float filteredRoughness = surf.filteredRoughness;
+	float eta = surf.eta;
+	bool frontFace = surf.frontFace;
 
 	// sample ggx vndf distribution which gives a new normal
-	ggxDirection(
+	vec3 halfVector = ggxDirection(
 		wo,
-		minRoughness,
-		minRoughness,
-		Math.random(),
-		Math.random(),
-		halfVector,
+		filteredRoughness,
+		filteredRoughness,
+		rand(),
+		rand()
 	);
 
-	// apply to new ray by reflecting off the new normal
-	tempDir.copy( wo ).multiplyScalar( - 1 );
-	refract( tempDir, halfVector, ratio, lightDirection );
 
-}
-
-function transmissionColor( wo, wi, material, hit, colorTarget ) {
-
-	const { metalness, transmission } = material;
-	colorTarget
-		.copy( material.color )
-		.multiplyScalar( ( 1.0 - metalness ) * wo.z )
-		.multiplyScalar( transmission );
+	// TODO: support thin film
+	vec3 lightDirection = refract( normalize( - wo ), halfVector, eta );
+	return normalize( lightDirection );
 
 }
 */
 
 // TODO: This is just using a basic cosine-weighted specular distribution with an
 // incorrect PDF value at the moment. Update it to correctly use a GGX distribution
-float transmissionPDF( vec3 wo, vec3 wi, SurfaceRec surf ) {
+float transmissionEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRec surf, out vec3 color ) {
 
-	float ior = surf.ior;
-	bool frontFace = surf.frontFace;
+	// only attenuate the color if it's on the way in
+	vec3 col = surf.thinFilm || surf.frontFace ? surf.color : vec3( 1.0 );
+	color = surf.transmission * col;
 
-	float ratio = frontFace ? 1.0 / ior : ior;
+	// PDF
+	float eta = surf.eta;
+	float f0 = surf.f0;
 	float cosTheta = min( wo.z, 1.0 );
 	float sinTheta = sqrt( 1.0 - cosTheta * cosTheta );
-	float reflectance = schlickFresnelFromIor( cosTheta, ratio );
-	bool cannotRefract = ratio * sinTheta > 1.0;
+	float reflectance = schlickFresnel( cosTheta, f0 );
+	bool cannotRefract = eta * sinTheta > 1.0;
 	if ( cannotRefract ) {
 
 		return 0.0;
@@ -2631,41 +4370,141 @@ float transmissionPDF( vec3 wo, vec3 wi, SurfaceRec surf ) {
 vec3 transmissionDirection( vec3 wo, SurfaceRec surf ) {
 
 	float roughness = surf.roughness;
-	float ior = surf.ior;
-	bool frontFace = surf.frontFace;
-	float ratio = frontFace ? 1.0 / ior : ior;
+	float eta = surf.eta;
+	vec3 halfVector = normalize( vec3( 0.0, 0.0, 1.0 ) + randDirection() * roughness );
+	vec3 lightDirection = refract( normalize( - wo ), halfVector, eta );
 
-	vec3 lightDirection = refract( - wo, vec3( 0.0, 0.0, 1.0 ), ratio );
-	lightDirection += randDirection() * roughness;
+	if ( surf.thinFilm ) {
+
+		lightDirection = - refract( normalize( - lightDirection ), - vec3( 0.0, 0.0, 1.0 ), 1.0 / eta );
+
+	}
 	return normalize( lightDirection );
 
 }
 
-vec3 transmissionColor( vec3 wo, vec3 wi, SurfaceRec surf ) {
+// clearcoat
+float clearcoatEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRec surf, inout vec3 color ) {
 
-	float metalness = surf.metalness;
-	float transmission = surf.transmission;
+	float ior = 1.5;
+	float f0 = iorRatioToF0( ior );
+	bool frontFace = surf.frontFace;
+	float filteredClearcoatRoughness = surf.filteredClearcoatRoughness;
 
-	vec3 color = surf.color;
-	color *= ( 1.0 - metalness );
-	color *= transmission;
+	float eta = frontFace ? 1.0 / ior : ior;
+	float G = ggxShadowMaskG2( wi, wo, filteredClearcoatRoughness );
+	float D = ggxDistribution( wh, filteredClearcoatRoughness );
+	float F = schlickFresnel( dot( wi, wh ), f0 );
+	float cosTheta = min( wo.z, 1.0 );
+	float sinTheta = sqrt( 1.0 - cosTheta * cosTheta );
+	bool cannotRefract = eta * sinTheta > 1.0;
+	if ( cannotRefract ) {
+
+		F = 1.0;
+
+	}
+
+	float fClearcoat = F * D * G / ( 4.0 * abs( wi.z * wo.z ) );
+	color = color * ( 1.0 - surf.clearcoat * F ) + fClearcoat * surf.clearcoat * wi.z;
+
+	// PDF
+	// See equation (27) in http://jcgt.org/published/0003/02/03/
+	return ggxPDF( wo, wh, filteredClearcoatRoughness ) / ( 4.0 * dot( wi, wh ) );
+
+}
+
+vec3 clearcoatDirection( vec3 wo, SurfaceRec surf ) {
+
+	// sample ggx vndf distribution which gives a new normal
+	float filteredClearcoatRoughness = surf.filteredClearcoatRoughness;
+	vec3 halfVector = ggxDirection(
+		wo,
+		filteredClearcoatRoughness,
+		filteredClearcoatRoughness,
+		rand(),
+		rand()
+	);
+
+	// apply to new ray by reflecting off the new normal
+	return - reflect( wo, halfVector );
+
+}
+
+// sheen
+vec3 sheenColor( vec3 wo, vec3 wi, vec3 wh, SurfaceRec surf ) {
+
+	float cosThetaO = saturateCos( wo.z );
+	float cosThetaI = saturateCos( wi.z );
+	float cosThetaH = wh.z;
+
+	float D = velvetD( cosThetaH, surf.sheenRoughness );
+	float G = velvetG( cosThetaO, cosThetaI, surf.sheenRoughness );
+
+	// See equation (1) in http://www.aconty.com/pdf/s2017_pbs_imageworks_sheen.pdf
+	vec3 color = surf.sheenColor;
+	color *= D * G / ( 4.0 * abs( cosThetaO * cosThetaI ) );
+	color *= wi.z;
 
 	return color;
 
 }
 
-float bsdfPdf( vec3 wo, vec3 wi, SurfaceRec surf, out float specularPdf ) {
+// bsdf
+#define DIFF_WEIGHT 0
+#define SPEC_WEIGHT 1
+#define TRANS_WEIGHT 2
+#define CC_WEIGHT 3
+void getLobeWeights( vec3 wo, vec3 wi, vec3 wh, vec3 clearcoatWo, SurfaceRec surf, out float[ 4 ] weights ) {
 
-	float ior = surf.ior;
 	float metalness = surf.metalness;
 	float transmission = surf.transmission;
-	bool frontFace = surf.frontFace;
 
-	float ratio = frontFace ? 1.0 / ior : ior;
+	float eta = surf.eta;
+	float f0 = surf.f0;
 	float cosTheta = min( wo.z, 1.0 );
 	float sinTheta = sqrt( 1.0 - cosTheta * cosTheta );
-	float reflectance = schlickFresnelFromIor( cosTheta, ratio );
-	bool cannotRefract = ratio * sinTheta > 1.0;
+
+	// TODO: does "cannot refract" belong in disney fresnel?
+	float reflectance = disneyFresnel( surf, wo, wi, wh );
+	bool cannotRefract = eta * sinTheta > 1.0;
+	if ( cannotRefract ) {
+
+		reflectance = 1.0;
+
+	}
+
+	float transSpecularProb = mix( max( 0.25, reflectance ), 1.0, metalness );
+	float diffSpecularProb = 0.5 + 0.5 * metalness;
+
+	float diffuseWeight = ( 1.0 - transmission ) * ( 1.0 - diffSpecularProb );
+	float specularWeight = transmission * transSpecularProb + ( 1.0 - transmission ) * diffSpecularProb;
+	float transmissionWeight = transmission * ( 1.0 - transSpecularProb );
+	float clearcoatWeight = surf.clearcoat * schlickFresnel( clearcoatWo.z, 0.04 );
+
+	float totalWeight = diffuseWeight + specularWeight + transmissionWeight + clearcoatWeight;
+	weights[ DIFF_WEIGHT ] = diffuseWeight / totalWeight;
+	weights[ SPEC_WEIGHT ] = specularWeight / totalWeight;
+	weights[ TRANS_WEIGHT ] = transmissionWeight / totalWeight;
+	weights[ CC_WEIGHT ] = clearcoatWeight / totalWeight;
+
+}
+
+float bsdfEval( vec3 wo, vec3 clearcoatWo, vec3 wi, vec3 clearcoatWi, SurfaceRec surf, float[ 4 ] weights, out float specularPdf, out vec3 color ) {
+
+	float diffuseWeight = weights[ DIFF_WEIGHT ];
+	float specularWeight = weights[ SPEC_WEIGHT ];
+	float transmissionWeight = weights[ TRANS_WEIGHT ];
+	float clearcoatWeight = weights[ CC_WEIGHT ];
+
+	float metalness = surf.metalness;
+	float transmission = surf.transmission;
+
+	float eta = surf.eta;
+	float f0 = surf.f0;
+	float cosTheta = min( wo.z, 1.0 );
+	float sinTheta = sqrt( 1.0 - cosTheta * cosTheta );
+	float reflectance = schlickFresnel( cosTheta, f0 );
+	bool cannotRefract = eta * sinTheta > 1.0;
 	if ( cannotRefract ) {
 
 		reflectance = 1.0;
@@ -2675,110 +4514,131 @@ float bsdfPdf( vec3 wo, vec3 wi, SurfaceRec surf, out float specularPdf ) {
 	float spdf = 0.0;
 	float dpdf = 0.0;
 	float tpdf = 0.0;
+	float cpdf = 0.0;
+	color = vec3( 0.0 );
 
-	if ( wi.z < 0.0 ) {
+	vec3 halfVector = getHalfVector( wi, wo, surf.eta );
 
-		tpdf = transmissionPDF( wo, wi, surf );
+	// diffuse
+	if ( diffuseWeight > 0.0 && wi.z > 0.0 ) {
 
-	} else {
-
-		spdf = specularPDF( wo, wi, surf );
-		dpdf = diffusePDF( wo, wi, surf );
+		dpdf = diffuseEval( wo, wi, halfVector, surf, color );
+		color *= 1.0 - surf.transmission;
 
 	}
 
-	float transSpecularProb = mix( reflectance, 1.0, metalness );
-	float diffSpecularProb = 0.5 + 0.5 * metalness;
+	// ggx specular
+	if ( specularWeight > 0.0 && wi.z > 0.0 ) {
+
+		vec3 outColor;
+		spdf = specularEval( wo, wi, getHalfVector( wi, wo ), surf, outColor );
+		color += outColor;
+
+	}
+
+	// transmission
+	if ( transmissionWeight > 0.0 && wi.z < 0.0 ) {
+
+		tpdf = transmissionEval( wo, wi, halfVector, surf, color );
+
+	}
+
+	// sheen
+	color *= sheenAlbedoScaling( wo, wi, surf );
+	color += sheenColor( wo, wi, halfVector, surf );
+
+	// clearcoat
+	if ( clearcoatWi.z >= 0.0 && clearcoatWeight > 0.0 ) {
+
+		vec3 clearcoatHalfVector = getHalfVector( clearcoatWo, clearcoatWi );
+		cpdf = clearcoatEval( clearcoatWo, clearcoatWi, clearcoatHalfVector, surf, color );
+
+	}
+
 	float pdf =
-		spdf * transmission * transSpecularProb
-		+ tpdf * transmission * ( 1.0 - transSpecularProb )
-		+ spdf * ( 1.0 - transmission ) * diffSpecularProb
-		+ dpdf * ( 1.0 - transmission ) * ( 1.0 - diffSpecularProb );
+		  dpdf * diffuseWeight
+		+ spdf * specularWeight
+		+ tpdf * transmissionWeight
+		+ cpdf * clearcoatWeight;
 
 	// retrieve specular rays for the shadows flag
-	specularPdf = spdf * transmission * transSpecularProb + spdf * ( 1.0 - transmission ) * diffSpecularProb;
+	specularPdf = spdf * specularWeight + cpdf * clearcoatWeight;
 
 	return pdf;
 
 }
 
-vec3 bsdfColor( vec3 wo, vec3 wi, SurfaceRec surf ) {
+float bsdfResult( vec3 wo, vec3 clearcoatWo, vec3 wi, vec3 clearcoatWi, SurfaceRec surf, out vec3 color ) {
 
-	vec3 color = vec3( 0.0 );
-	if ( wi.z < 0.0 ) {
+	float[ 4 ] pdf;
+	vec3 wh = getHalfVector( wo, wi, surf.eta );
+	getLobeWeights( wo, wi, wh, clearcoatWo, surf, pdf );
 
-		color = transmissionColor( wo, wi, surf );
+	float specularPdf;
+	return bsdfEval( wo, clearcoatWo, wi, clearcoatWi, surf, pdf, specularPdf, color );
+
+}
+
+SampleRec bsdfSample( vec3 wo, vec3 clearcoatWo, mat3 normalBasis, mat3 invBasis, mat3 clearcoatNormalBasis, mat3 clearcoatInvBasis, SurfaceRec surf ) {
+
+	// using normal and basically-reflected ray since we don't have proper half vector here
+	float pdf[4];
+	getLobeWeights( wo, wo, vec3( 0, 0, 1 ), clearcoatWo, surf, pdf );
+
+	float cdf[4];
+	cdf[0] = pdf[0];
+	cdf[1] = pdf[1] + cdf[0];
+	cdf[2] = pdf[2] + cdf[1];
+	cdf[3] = pdf[3] + cdf[2];
+
+	if( cdf[3] != 0.0 ) {
+
+		float invMaxCdf = 1.0 / cdf[3];
+		cdf[0] *= invMaxCdf;
+		cdf[1] *= invMaxCdf;
+		cdf[2] *= invMaxCdf;
+		cdf[3] *= invMaxCdf;
 
 	} else {
 
-		color = diffuseColor( wo, wi, surf );
-		color *= 1.0 - surf.transmission;
-
-		color += specularColor( wo, wi, surf );
+		cdf[0] = 1.0;
+		cdf[1] = 0.0;
+		cdf[2] = 0.0;
+		cdf[3] = 0.0;
 
 	}
 
-	return color;
+	vec3 wi;
+	vec3 clearcoatWi;
 
-}
+	float r = rand();
+	if ( r <= cdf[0] ) { // diffuse
 
-float bsdfResult( vec3 wo, vec3 wi, SurfaceRec surf, out vec3 color ) {
+		wi = diffuseDirection( wo, surf );
+		clearcoatWi = normalize( clearcoatInvBasis * normalize( normalBasis * wi ) );
 
-	float specularPdf;
-	color = bsdfColor( wo, wi, surf );
-	return bsdfPdf( wo, wi, surf, specularPdf );
+	} else if ( r <= cdf[1] ) { // specular
 
-}
+		wi = specularDirection( wo, surf );
+		clearcoatWi = normalize( clearcoatInvBasis * normalize( normalBasis * wi ) );
 
-SampleRec bsdfSample( vec3 wo, SurfaceRec surf ) {
+	} else if ( r <= cdf[2] ) { // transmission / refraction
 
-	float ior = surf.ior;
-	float metalness = surf.metalness;
-	float transmission = surf.transmission;
-	bool frontFace = surf.frontFace;
+		wi = transmissionDirection( wo, surf );
+		clearcoatWi = normalize( clearcoatInvBasis * normalize( normalBasis * wi ) );
 
-	float ratio = frontFace ? 1.0 / ior : ior;
-	float cosTheta = min( wo.z, 1.0 );
-	float sinTheta = sqrt( 1.0 - cosTheta * cosTheta );
-	float reflectance = schlickFresnelFromIor( cosTheta, ratio );
-	bool cannotRefract = ratio * sinTheta > 1.0;
-	if ( cannotRefract ) {
+	} else if ( r <= cdf[3] ) { // clearcoat
 
-		reflectance = 1.0;
+		clearcoatWi = clearcoatDirection( clearcoatWo, surf );
+		wi = normalize( invBasis * normalize( clearcoatNormalBasis * clearcoatWi ) );
 
 	}
 
 	SampleRec result;
-	if ( rand() < transmission ) {
+	result.pdf = bsdfEval( wo, clearcoatWo, wi, clearcoatWi, surf, pdf, result.specularPdf, result.color );
+	result.direction = wi;
+	result.clearcoatDirection = clearcoatWi;
 
-		float specularProb = mix( reflectance, 1.0, metalness );
-		if ( rand() < specularProb ) {
-
-			result.direction = specularDirection( wo, surf );
-
-		} else {
-
-			result.direction = transmissionDirection( wo, surf );
-
-		}
-
-	} else {
-
-		float specularProb = 0.5 + 0.5 * metalness;
-		if ( rand() < specularProb ) {
-
-			result.direction = specularDirection( wo, surf );
-
-		} else {
-
-			result.direction = diffuseDirection( wo, surf );
-
-		}
-
-	}
-
-	result.pdf = bsdfPdf( wo, result.direction, surf, result.specularPdf );
-	result.color = bsdfColor( wo, result.direction, surf );
 	return result;
 
 }
@@ -2812,7 +4672,7 @@ float envMapSample( vec3 direction, EquirectHdrInfo info, out vec3 color ) {
 	vec2 uv = equirectDirectionToUv( direction );
 	color = texture2D( info.map, uv ).rgb;
 
-	float totalSum = texture2D( info.totalSum, vec2( 0.0 ) ).r;
+	float totalSum = info.totalSumWhole + info.totalSumDecimal;
 	float lum = colorToLuminance( color );
 	ivec2 resolution = textureSize( info.map, 0 );
 	float pdf = lum / totalSum;
@@ -2833,7 +4693,7 @@ float randomEnvMapSample( EquirectHdrInfo info, out vec3 color, out vec3 directi
 	direction = derivedDirection;
 	color = texture2D( info.map, uv ).rgb;
 
-	float totalSum = texture2D( info.totalSum, vec2( 0.0 ) ).r;
+	float totalSum = info.totalSumWhole + info.totalSumDecimal;
 	float lum = colorToLuminance( color );
 	ivec2 resolution = textureSize( info.map, 0 );
 	float pdf = lum / totalSum;
@@ -2846,12 +4706,47 @@ float randomEnvMapSample( EquirectHdrInfo info, out vec3 color, out vec3 directi
 
 const shaderLightSampling = /* glsl */`
 
+float getSpotAttenuation( const in float coneCosine, const in float penumbraCosine, const in float angleCosine ) {
+
+	return smoothstep( coneCosine, penumbraCosine, angleCosine );
+
+}
+
+float getDistanceAttenuation( const in float lightDistance, const in float cutoffDistance, const in float decayExponent ) {
+
+	// based upon Frostbite 3 Moving to Physically-based Rendering
+	// page 32, equation 26: E[window1]
+	// https://seblagarde.files.wordpress.com/2015/07/course_notes_moving_frostbite_to_pbr_v32.pdf
+	float distanceFalloff = 1.0 / max( pow( lightDistance, decayExponent ), EPSILON );
+
+	if ( cutoffDistance > 0.0 ) {
+
+		distanceFalloff *= pow2( saturate( 1.0 - pow4( lightDistance / cutoffDistance ) ) );
+
+	}
+
+	return distanceFalloff;
+
+}
+
+float getPhotometricAttenuation( sampler2DArray iesProfiles, int iesProfile, vec3 posToLight, vec3 lightDir, vec3 u, vec3 v ) {
+
+    float cosTheta = dot( posToLight, lightDir );
+    float angle = acos( cosTheta ) * ( 1.0 / PI );
+
+    return texture2D( iesProfiles, vec3( 0.0, angle, iesProfile ) ).r;
+
+}
+
 struct LightSampleRec {
+
 	bool hit;
 	float dist;
 	vec3 direction;
 	float pdf;
 	vec3 emission;
+	int type;
+
 };
 
 LightSampleRec lightsClosestHit( sampler2D lights, uint lightCount, vec3 rayOrigin, vec3 rayDirection ) {
@@ -2860,7 +4755,7 @@ LightSampleRec lightsClosestHit( sampler2D lights, uint lightCount, vec3 rayOrig
 	lightSampleRec.hit = false;
 
 	uint l;
-	for ( l = 0u; l < lightCount; l++ ) {
+	for ( l = 0u; l < lightCount; l ++ ) {
 
 		Light light = readLightInfo( lights, l );
 
@@ -2873,21 +4768,60 @@ LightSampleRec lightsClosestHit( sampler2D lights, uint lightCount, vec3 rayOrig
 			continue;
 		}
 
-		u *= 1.0 / dot(u, u);
-		v *= 1.0 / dot(v, v);
+		u *= 1.0 / dot( u, u );
+		v *= 1.0 / dot( v, v );
 
 		float dist;
-		if ( intersectsRectangle( light.position, normal, u, v, rayOrigin, rayDirection, dist ) ) {
 
-			if ( dist < lightSampleRec.dist || !lightSampleRec.hit ) {
+		if(
+			( light.type == RECT_AREA_LIGHT_TYPE && intersectsRectangle( light.position, normal, u, v, rayOrigin, rayDirection, dist ) ) ||
+			( light.type == CIRC_AREA_LIGHT_TYPE && intersectsCircle( light.position, normal, u, v, rayOrigin, rayDirection, dist ) )
+		) {
+
+			if ( dist < lightSampleRec.dist || ! lightSampleRec.hit ) {
+
+				float cosTheta = dot( rayDirection, normal );
 
 				lightSampleRec.hit = true;
 				lightSampleRec.dist = dist;
-				float cosTheta = dot( rayDirection, normal );
 				lightSampleRec.pdf = ( dist * dist ) / ( light.area * cosTheta );
 				lightSampleRec.emission = light.color * light.intensity;
 				lightSampleRec.direction = rayDirection;
+				lightSampleRec.type = light.type;
+
 			}
+
+		} else if ( light.type == SPOT_LIGHT_TYPE ) {
+
+			// TODO: forward path tracing sampling needs to be made consistent with direct light sampling logic
+			// float radius = light.radius;
+			// vec3 lightNormal = normalize( cross( light.u, light.v ) );
+			// float angle = acos( light.coneCos );
+			// float angleTan = tan( angle );
+			// float startDistance = radius / max( angleTan, EPSILON );
+
+			// u = light.u / radius;
+			// v = light.v / radius;
+
+			// if (
+			// 	intersectsCircle( light.position - normal * startDistance, normal, u, v, rayOrigin, rayDirection, dist ) &&
+			// 	( dist < lightSampleRec.dist || ! lightSampleRec.hit )
+			// ) {
+
+			// 	float cosTheta = dot( rayDirection, normal );
+			// 	float spotAttenuation = light.iesProfile != - 1 ?
+			// 		getPhotometricAttenuation( iesProfiles, light.iesProfile, rayDirection, normal, u, v )
+			// 		: getSpotAttenuation( light.coneCos, light.penumbraCos, cosTheta );
+
+			// 	float distanceAttenuation = getDistanceAttenuation( dist, light.distance, light.decay );
+
+			// 	lightSampleRec.hit = true;
+			// 	lightSampleRec.dist = dist;
+			// 	lightSampleRec.direction = rayDirection;
+			// 	lightSampleRec.emission = light.color * light.intensity * distanceAttenuation * spotAttenuation;
+			// 	lightSampleRec.pdf = ( dist * dist ) / ( light.area * cosTheta );
+
+			// }
 
 		}
 
@@ -2897,19 +4831,37 @@ LightSampleRec lightsClosestHit( sampler2D lights, uint lightCount, vec3 rayOrig
 
 }
 
-LightSampleRec randomRectAreaLightSample( Light light, vec3 rayOrigin ) {
+LightSampleRec randomAreaLightSample( Light light, vec3 rayOrigin ) {
 
 	LightSampleRec lightSampleRec;
 	lightSampleRec.hit = true;
+	lightSampleRec.type = light.type;
 
 	lightSampleRec.emission = light.color * light.intensity;
 
-	vec3 randomPos = light.position + light.u * ( rand() - 0.5 ) + light.v * ( rand() - 0.5 );
+	vec3 randomPos;
+	if( light.type == RECT_AREA_LIGHT_TYPE ) {
+
+		// rectangular area light
+		randomPos = light.position + light.u * ( rand() - 0.5 ) + light.v * ( rand() - 0.5 );
+
+	} else if( light.type == 1 ) {
+
+		// circular area light
+		float r = 0.5 * sqrt( rand() );
+		float theta = rand() * 2.0 * PI;
+		float x = r * cos( theta );
+		float y = r * sin( theta );
+
+		randomPos = light.position + light.u * x + light.v * y;
+
+	}
+
 	vec3 toLight = randomPos - rayOrigin;
 	float lightDistSq = dot( toLight, toLight );
-	lightSampleRec.dist = length( toLight );
+	lightSampleRec.dist = sqrt( lightDistSq );
 
-	vec3 direction = normalize( toLight );
+	vec3 direction = toLight / lightSampleRec.dist;
 	lightSampleRec.direction = direction;
 
 	vec3 lightNormal = normalize( cross( light.u, light.v ) );
@@ -2919,96 +4871,292 @@ LightSampleRec randomRectAreaLightSample( Light light, vec3 rayOrigin ) {
 
 }
 
-LightSampleRec randomLightSample( sampler2D lights, uint lightCount, vec3 rayOrigin ) {
+LightSampleRec randomSpotLightSample( Light light, sampler2DArray iesProfiles, vec3 rayOrigin ) {
+
+	float radius = light.radius * sqrt( rand() );
+	float theta = rand() * 2.0 * PI;
+	float x = radius * cos( theta );
+	float y = radius * sin( theta );
+
+	vec3 u = light.u;
+	vec3 v = light.v;
+	vec3 normal = normalize( cross( u, v ) );
+
+	float angle = acos( light.coneCos );
+	float angleTan = tan( angle );
+	float startDistance = light.radius / max( angleTan, EPSILON );
+
+	vec3 randomPos = light.position - normal * startDistance + u * x + v * y;
+	vec3 toLight = randomPos - rayOrigin;
+	float lightDistSq = dot( toLight, toLight );
+	float dist = sqrt( lightDistSq );
+
+	vec3 direction = toLight / max( dist, EPSILON );
+	float cosTheta = dot( direction, normal );
+
+	float spotAttenuation = light.iesProfile != - 1 ?
+		  getPhotometricAttenuation( iesProfiles, light.iesProfile, direction, normal, u, v )
+		: getSpotAttenuation( light.coneCos, light.penumbraCos, cosTheta );
+
+	float distanceAttenuation = getDistanceAttenuation( dist, light.distance, light.decay );
+	LightSampleRec lightSampleRec;
+	lightSampleRec.hit = true;
+	lightSampleRec.type = light.type;
+	lightSampleRec.dist = dist;
+	lightSampleRec.direction = direction;
+	lightSampleRec.emission = light.color * light.intensity * distanceAttenuation * spotAttenuation;
+
+	// TODO: this makes the result consistent between MIS and non MIS paths but at radius 0 the pdf is infinite
+	// and the intensity of the light is not correct
+	lightSampleRec.pdf = 1.0;
+	// lightSampleRec.pdf = lightDistSq / ( light.area * cosTheta );
+
+	return lightSampleRec;
+
+}
+
+LightSampleRec randomLightSample( sampler2D lights, sampler2DArray iesProfiles, uint lightCount, vec3 rayOrigin ) {
 
 	// pick a random light
 	uint l = uint( rand() * float( lightCount ) );
 	Light light = readLightInfo( lights, l );
 
-	// sample the light
-	return randomRectAreaLightSample( light, rayOrigin );
+	if ( light.type == SPOT_LIGHT_TYPE ) {
+
+		return randomSpotLightSample( light, iesProfiles, rayOrigin );
+
+	} else {
+
+		// sample the light
+		return randomAreaLightSample( light, rayOrigin );
+
+	}
 
 }
 
 `;
 
-const LIGHT_PIXELS = 4;
+const shaderLayerTexelFetchFunctions = /*glsl */`
 
-class LightsTexture extends DataTexture {
+	// add texel fetch functions for texture arrays
+	vec4 texelFetch1D( sampler2DArray tex, int layer, uint index ) {
 
-	constructor() {
+		uint width = uint( textureSize( tex, 0 ).x );
+		uvec2 uv;
+		uv.x = index % width;
+		uv.y = index / width;
 
-		super( new Float32Array( 4 ), 1, 1 );
-
-		this.format = RGBAFormat;
-		this.type = FloatType;
-		this.wrapS = ClampToEdgeWrapping;
-		this.wrapT = ClampToEdgeWrapping;
-		this.generateMipmaps = false;
+		return texelFetch( tex, ivec3( uv, layer ), 0 );
 
 	}
 
-	updateFrom( lights ) {
+	vec4 textureSampleBarycoord( sampler2DArray tex, int layer, vec3 barycoord, uvec3 faceIndices ) {
 
-		let index = 0;
-		const pixelCount = lights.length * LIGHT_PIXELS;
-		const dimension = Math.ceil( Math.sqrt( pixelCount ) );
+		return
+			barycoord.x * texelFetch1D( tex, layer, faceIndices.x ) +
+			barycoord.y * texelFetch1D( tex, layer, faceIndices.y ) +
+			barycoord.z * texelFetch1D( tex, layer, faceIndices.z );
 
-		if ( this.image.width !== dimension ) {
+	}
 
-			this.dispose();
+`;
 
-			this.image.data = new Float32Array( dimension * dimension * 4 );
-			this.image.width = dimension;
-			this.image.height = dimension;
+function copyArrayToArray( fromArray, fromStride, toArray, toStride, offset ) {
 
-		}
+	if ( fromStride > toStride ) {
 
-		const floatArray = this.image.data;
+		throw new Error();
 
-		const u = new Vector3();
-		const v = new Vector3();
-		const worldQuaternion = new Quaternion();
+	}
 
-		for ( let i = 0, l = lights.length; i < l; i ++ ) {
+	// scale non-float values to their normalized range
+	const count = fromArray.length / fromStride;
+	const bpe = fromArray.constructor.BYTES_PER_ELEMENT * 8;
+	let maxValue = 1.0;
+	switch ( fromArray.constructor ) {
 
-			const l = lights[ i ];
+	case Uint8Array:
+	case Uint16Array:
+	case Uint32Array:
+		maxValue = 2 ** bpe - 1;
+		break;
 
-			// position
-			l.getWorldPosition( v );
-			floatArray[ index ++ ] = v.x;
-			floatArray[ index ++ ] = v.y;
-			floatArray[ index ++ ] = v.z;
-			index ++;
+	case Int8Array:
+	case Int16Array:
+	case Int32Array:
+		maxValue = 2 ** ( bpe - 1 ) - 1;
+		break;
 
-			// color
-			floatArray[ index ++ ] = l.color.r;
-			floatArray[ index ++ ] = l.color.g;
-			floatArray[ index ++ ] = l.color.b;
+	}
 
-			// intensity
-			floatArray[ index ++ ] = l.intensity;
+	for ( let i = 0; i < count; i ++ ) {
 
-			// u vector
-			l.getWorldQuaternion( worldQuaternion );
-			u.set( l.width, 0, 0 ).applyQuaternion( worldQuaternion );
-			floatArray[ index ++ ] = u.x;
-			floatArray[ index ++ ] = u.y;
-			floatArray[ index ++ ] = u.z;
-			index ++;
+		const i4 = 4 * i;
+		const is = fromStride * i;
+		for ( let j = 0; j < toStride; j ++ ) {
 
-			// v vector
-			v.set( 0, l.height, 0 ).applyQuaternion( worldQuaternion );
-			floatArray[ index ++ ] = v.x;
-			floatArray[ index ++ ] = v.y;
-			floatArray[ index ++ ] = v.z;
-
-			// area
-			floatArray[ index ++ ] = u.cross( v ).length();
+			toArray[ offset + i4 + j ] = fromStride >= j + 1 ? fromArray[ is + j ] / maxValue : 0;
 
 		}
 
+	}
+
+}
+
+class FloatAttributeTextureArray extends DataArrayTexture {
+
+	constructor() {
+
+		super();
+		this._textures = [];
+		this.type = FloatType;
+		this.format = RGBAFormat;
+		this.internalFormat = 'RGBA32F';
+
+	}
+
+	updateAttribute( index, attr ) {
+
+		// update the texture
+		const tex = this._textures[ index ];
+		tex.updateFrom( attr );
+
+		// ensure compatibility
+		const baseImage = tex.image;
+		const image = this.image;
+		if ( baseImage.width !== image.width || baseImage.height !== image.height ) {
+
+			throw new Error( 'FloatAttributeTextureArray: Attribute must be the same dimensions when updating single layer.' );
+
+		}
+
+		// update the image
+		const { width, height, data } = image;
+		const length = width * height * 4;
+		const offset = length * index;
+		let itemSize = attr.itemSize;
+		if ( itemSize === 3 ) {
+
+			itemSize = 4;
+
+		}
+
+		// copy the data
+		copyArrayToArray( tex.image.data, itemSize, data, 4, offset );
+
+		this.dispose();
 		this.needsUpdate = true;
+
+	}
+
+	setAttributes( attrs ) {
+
+		// ensure the attribute count
+		const itemCount = attrs[ 0 ].count;
+		const attrsLength = attrs.length;
+		for ( let i = 0, l = attrsLength; i < l; i ++ ) {
+
+			if ( attrs[ i ].count !== itemCount ) {
+
+				throw new Error( 'FloatAttributeTextureArray: All attributes must have the same item count.' );
+
+			}
+
+		}
+
+		// initialize all textures
+		const textures = this._textures;
+		while ( textures.length < attrsLength ) {
+
+			const tex = new FloatVertexAttributeTexture();
+			textures.push( tex );
+
+		}
+
+		while ( textures.length > attrsLength ) {
+
+			textures.pop();
+
+		}
+
+		// update all textures
+		for ( let i = 0, l = attrsLength; i < l; i ++ ) {
+
+			textures[ i ].updateFrom( attrs[ i ] );
+
+		}
+
+		// determine if we need to create a new array
+		const baseTexture = textures[ 0 ];
+		const baseImage = baseTexture.image;
+		const image = this.image;
+
+		if ( baseImage.width !== image.width || baseImage.height !== image.height || baseImage.depth !== attrsLength ) {
+
+			image.width = baseImage.width;
+			image.height = baseImage.height;
+			image.depth = attrsLength;
+			image.data = new Float32Array( image.width * image.height * image.depth * 4 );
+
+		}
+
+		// copy the other texture data into the data array texture
+		const { data, width, height } = image;
+		for ( let i = 0, l = attrsLength; i < l; i ++ ) {
+
+			const tex = textures[ i ];
+			const length = width * height * 4;
+			const offset = length * i;
+
+			let itemSize = attrs[ i ].itemSize;
+			if ( itemSize === 3 ) {
+
+				itemSize = 4;
+
+			}
+
+			copyArrayToArray( tex.image.data, itemSize, data, 4, offset );
+
+		}
+
+		// reset the texture
+		this.dispose();
+		this.needsUpdate = true;
+
+	}
+
+
+}
+
+class AttributesTextureArray extends FloatAttributeTextureArray {
+
+	updateNormalAttribute( attr ) {
+
+		this.updateAttribute( 0, attr );
+
+	}
+
+	updateTangentAttribute( attr ) {
+
+		this.updateAttribute( 1, attr );
+
+	}
+
+	updateUvAttribute( attr ) {
+
+		this.updateAttribute( 2, attr );
+
+	}
+
+	updateColorAttribute( attr ) {
+
+		this.updateAttribute( 3, attr );
+
+	}
+
+	updateFrom( normal, tangent, uv, color ) {
+
+		this.setAttributes( [ normal, tangent, uv, color ] );
 
 	}
 
@@ -3019,6 +5167,7 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 	onBeforeRender() {
 
 		this.setDefine( 'FEATURE_DOF', this.physicalCamera.bokehSize === 0 ? 0 : 1 );
+		this.setDefine( 'FEATURE_BACKGROUND_MAP', this.backgroundMap ? 1 : 0 );
 
 	}
 
@@ -3032,9 +5181,17 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 			defines: {
 				FEATURE_MIS: 1,
 				FEATURE_DOF: 1,
-				FEATURE_GRADIENT_BG: 0,
+				FEATURE_BACKGROUND_MAP: 0,
 				TRANSPARENT_TRAVERSALS: 5,
+				// 0 = Perspective
+				// 1 = Orthographic
+				// 2 = Equirectangular
 				CAMERA_TYPE: 0,
+
+				ATTR_NORMAL: 0,
+				ATTR_TANGENT: 1,
+				ATTR_UV: 2,
+				ATTR_COLOR: 3,
 			},
 
 			uniforms: {
@@ -3044,27 +5201,24 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 				physicalCamera: { value: new PhysicalCameraUniform() },
 
 				bvh: { value: new MeshBVHUniformStruct() },
-				normalAttribute: { value: new FloatVertexAttributeTexture() },
-				tangentAttribute: { value: new FloatVertexAttributeTexture() },
-				uvAttribute: { value: new FloatVertexAttributeTexture() },
+				attributesArray: { value: new AttributesTextureArray() },
 				materialIndexAttribute: { value: new UIntVertexAttributeTexture() },
 				materials: { value: new MaterialsTexture() },
 				textures: { value: new RenderTarget2DArray().texture },
-				lights: { value: new LightsTexture() },
-				lightCount: { value: 0 },
+				lights: { value: new LightsInfoUniformStruct() },
+				iesProfiles: { value: new IESProfilesTexture().texture },
 				cameraWorldMatrix: { value: new Matrix4() },
 				invProjectionMatrix: { value: new Matrix4() },
 				backgroundBlur: { value: 0.0 },
-				environmentIntensity: { value: 2.0 },
-				environmentRotation: { value: new Matrix3() },
+				environmentIntensity: { value: 1.0 },
+				environmentRotation: { value: new Matrix4() },
 				envMapInfo: { value: new EquirectHdrInfoUniform() },
+				backgroundMap: { value: null },
 
 				seed: { value: 0 },
 				opacity: { value: 1 },
 				filterGlossyFactor: { value: 0.0 },
 
-				bgGradientTop: { value: new Color( 0x111111 ) },
-				bgGradientBottom: { value: new Color( 0x000000 ) },
 				backgroundAlpha: { value: 1.0 },
 			},
 
@@ -3097,19 +5251,18 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 				${ shaderMaterialStructs }
 				${ shaderLightStruct }
 
+				${ shaderLayerTexelFetchFunctions }
 				${ shaderUtils }
 				${ shaderMaterialSampling }
 				${ shaderEnvMapSampling }
-				${ shaderLightSampling }
 
-				uniform mat3 environmentRotation;
+				uniform mat4 environmentRotation;
 				uniform float backgroundBlur;
 				uniform float backgroundAlpha;
 
-				#if FEATURE_GRADIENT_BG
+				#if FEATURE_BACKGROUND_MAP
 
-				uniform vec3 bgGradientTop;
-				uniform vec3 bgGradientBottom;
+				uniform sampler2D backgroundMap;
 
 				#endif
 
@@ -3123,9 +5276,7 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 				uniform int bounces;
 				uniform mat4 cameraWorldMatrix;
 				uniform mat4 invProjectionMatrix;
-				uniform sampler2D normalAttribute;
-				uniform sampler2D tangentAttribute;
-				uniform sampler2D uvAttribute;
+				uniform sampler2DArray attributesArray;
 				uniform usampler2D materialIndexAttribute;
 				uniform BVH bvh;
 				uniform float environmentIntensity;
@@ -3133,28 +5284,38 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 				uniform int seed;
 				uniform float opacity;
 				uniform sampler2D materials;
-				uniform sampler2D lights;
-				uniform uint lightCount;
+				uniform LightsInfo lights;
+				uniform sampler2DArray iesProfiles;
+
+				${ shaderLightSampling }
 
 				uniform EquirectHdrInfo envMapInfo;
 
 				uniform sampler2DArray textures;
 				varying vec2 vUv;
 
+				float applyFilteredGlossy( float roughness, float accumulatedRoughness ) {
+
+					return clamp(
+						max(
+							roughness,
+							accumulatedRoughness * filterGlossyFactor * 5.0 ),
+						0.0,
+						1.0
+					);
+
+				}
+
 				vec3 sampleBackground( vec3 direction ) {
 
-					#if FEATURE_GRADIENT_BG
+					vec3 sampleDir = normalize( direction + getHemisphereSample( direction, rand2() ) * 0.5 * backgroundBlur );
 
-					direction = normalize( direction + randDirection() * 0.05 );
+					#if FEATURE_BACKGROUND_MAP
 
-					float value = ( direction.y + 1.0 ) / 2.0;
-					value = pow( value, 2.0 );
-
-					return mix( bgGradientBottom, bgGradientTop, value );
+					return sampleEquirectEnvMapColor( sampleDir, backgroundMap );
 
 					#else
 
-					vec3 sampleDir = normalize( direction + getHemisphereSample( direction, rand2() ) * 0.5 * backgroundBlur );
 					return environmentIntensity * sampleEquirectEnvMapColor( sampleDir, envMapInfo.map );
 
 					#endif
@@ -3181,7 +5342,9 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 							// Should be able to work using the material BSDF functions which will take into account specularity, etc.
 							// TODO: should we account for emissive surfaces here?
 
-							vec2 uv = textureSampleBarycoord( uvAttribute, barycoord, faceIndices.xyz ).xy;
+							vec2 uv = textureSampleBarycoord( attributesArray, ATTR_UV, barycoord, faceIndices.xyz ).xy;
+							vec4 vertexColor = textureSampleBarycoord( attributesArray, ATTR_COLOR, barycoord, faceIndices.xyz );
+
 							uint materialIndex = uTexelFetch1D( materialIndexAttribute, faceIndices.x ).r;
 							Material material = readMaterialInfo( materials, materialIndex );
 
@@ -3209,8 +5372,14 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 							}
 
+							if ( material.vertexColors ) {
+
+								albedo *= vertexColor;
+
+							}
+
 							// alphaMap
-							if ( material.alphaMap != -1 ) {
+							if ( material.alphaMap != - 1 ) {
 
 								albedo.a *= texture2D( textures, vec3( uv, material.alphaMap ) ).x;
 
@@ -3246,7 +5415,7 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 									|| useAlphaTest && albedo.a < alphaTest
 
 									// opacity
-									|| ! useAlphaTest && albedo.a < rand()
+									|| material.transparent && ! useAlphaTest && albedo.a < rand()
 								)
 							) {
 
@@ -3254,10 +5423,15 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 							}
 
-							// only attenuate on the way in
-							if ( isBelowSurface ) {
+							if ( side == 1.0 && isBelowSurface ) {
 
+								// only attenuate by surface color on the way in
 								color *= mix( vec3( 1.0 ), albedo.rgb, transmissionFactor );
+
+							} else if ( side == - 1.0 ) {
+
+								// attenuate by medium once we hit the opposite side of the model
+								color *= transmissionAttenuation( dist, material.attenuationColor, material.attenuationDistance );
 
 							}
 
@@ -3300,38 +5474,48 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 					return rayOrigin4.xyz / rayOrigin4.w;
 				}
 
-				void main() {
+				void getCameraRay( out vec3 rayDirection, out vec3 rayOrigin ) {
 
-					rng_initialize( gl_FragCoord.xy, seed );
+					vec2 ssd = vec2( 1.0 ) / resolution;
 
-					// get [-1, 1] normalized device coordinates
-					vec2 ndc = 2.0 * vUv - vec2( 1.0 );
+					// Jitter the camera ray by finding a uv coordinate at a random sample
+					// around this pixel's UV coordinate
+					vec2 jitteredUv = vUv + vec2( tentFilter( rand() ) * ssd.x, tentFilter( rand() ) * ssd.y );
 
-					vec3 ss00 = ndcToRayOrigin( vec2( - 1.0, - 1.0 ) );
-					vec3 ss01 = ndcToRayOrigin( vec2( - 1.0, 1.0 ) );
-					vec3 ss10 = ndcToRayOrigin( vec2( 1.0, - 1.0 ) );
+					#if CAMERA_TYPE == 2
 
-					vec3 ssdX = ( ss10 - ss00 ) / resolution.x;
-					vec3 ssdY = ( ss01 - ss00 ) / resolution.y;
+						// Equirectangular projection
 
-					// Jitter the camera ray by finding a new subpixel point to point to from the camera origin
-					// This is better than just jittering the camera position since it actually results in divergent
-					// rays providing better coverage for the pixel
-					vec3 rayOrigin = ndcToRayOrigin( ndc ) + tentFilter( rand() ) * ssdX + tentFilter( rand() ) * ssdY;
+						vec4 rayDirection4 = vec4( equirectUvToDirection( jitteredUv ), 0.0 );
+						vec4 rayOrigin4 = vec4( 0.0, 0.0, 0.0, 1.0 );
 
-					vec3 rayDirection;
+						rayDirection4 = cameraWorldMatrix * rayDirection4;
+						rayOrigin4 = cameraWorldMatrix * rayOrigin4;
 
-					#if CAMERA_TYPE == 1
-
-						// orthographic
-						rayDirection = ( cameraWorldMatrix * vec4( 0.0, 0.0, -1.0, 0.0 ) ).xyz;
-						rayDirection = normalize( rayDirection );
+						rayDirection = normalize( rayDirection4.xyz );
+						rayOrigin = rayOrigin4.xyz / rayOrigin4.w;
 
 					#else
 
-						// perspective
-						vec3 cameraOrigin = ( cameraWorldMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
-						rayDirection = normalize( rayOrigin - cameraOrigin );
+						// get [- 1, 1] normalized device coordinates
+						vec2 ndc = 2.0 * jitteredUv - vec2( 1.0 );
+
+						rayOrigin = ndcToRayOrigin( ndc );
+
+						#if CAMERA_TYPE == 1
+
+							// Orthographic projection
+
+							rayDirection = ( cameraWorldMatrix * vec4( 0.0, 0.0, - 1.0, 0.0 ) ).xyz;
+							rayDirection = normalize( rayDirection );
+
+						#else
+
+							// Perspective projection
+
+							rayDirection = normalize( mat3(cameraWorldMatrix) * ( invProjectionMatrix * vec4( ndc, 0.0, 1.0 ) ).xyz );
+
+						#endif
 
 					#endif
 
@@ -3360,10 +5544,23 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 					}
 					#endif
+
 					rayDirection = normalize( rayDirection );
 
+				}
+
+				void main() {
+
+					rng_initialize( gl_FragCoord.xy, seed );
+
+					vec3 rayDirection;
+					vec3 rayOrigin;
+
+					getCameraRay( rayDirection, rayOrigin );
+
 					// inverse environment rotation
-					mat3 invEnvironmentRotation = inverse( environmentRotation );
+					mat3 envRotation3x3 = mat3( environmentRotation );
+					mat3 invEnvRotation3x3 = inverse( envRotation3x3 );
 
 					// final color
 					gl_FragColor = vec4( 0.0 );
@@ -3378,6 +5575,7 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 					// path tracing state
 					float accumulatedRoughness = 0.0;
+					float accumulatedClearcoatRoughness = 0.0;
 					bool transmissiveRay = true;
 					int transparentTraversals = TRANSPARENT_TRAVERSALS;
 					vec3 throughputColor = vec3( 1.0 );
@@ -3389,7 +5587,7 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 						bool hit = bvhIntersectFirstHit( bvh, rayOrigin, rayDirection, faceIndices, faceNormal, barycoord, side, dist );
 
-						LightSampleRec lightHit = lightsClosestHit( lights, lightCount, rayOrigin, rayDirection );
+						LightSampleRec lightHit = lightsClosestHit( lights.tex, lights.count, rayOrigin, rayDirection );
 
 						if ( lightHit.hit && ( lightHit.dist < dist || !hit ) ) {
 
@@ -3401,15 +5599,23 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 								#if FEATURE_MIS
 
-								// weight the contribution
-								float misWeight = misHeuristic( sampleRec.pdf, lightHit.pdf / float( lightCount + 1u ) );
-								gl_FragColor.rgb += lightHit.emission * throughputColor * misWeight;
+								// NOTE: we skip MIS for spotlights since we haven't fixed the forward
+								// path tracing code path, yet
+								if ( lightHit.type == SPOT_LIGHT_TYPE ) {
+
+									gl_FragColor.rgb += lightHit.emission * throughputColor;
+
+								} else {
+
+									// weight the contribution
+									float misWeight = misHeuristic( sampleRec.pdf, lightHit.pdf / float( lights.count + 1u ) );
+									gl_FragColor.rgb += lightHit.emission * throughputColor * misWeight;
+
+								}
 
 								#else
 
-								gl_FragColor.rgb +=
-									lightHit.emission *
-									throughputColor;
+								gl_FragColor.rgb += lightHit.emission * throughputColor;
 
 								#endif
 
@@ -3422,7 +5628,7 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 							if ( i == 0 || transmissiveRay ) {
 
-								gl_FragColor.rgb += sampleBackground( environmentRotation * rayDirection ) * throughputColor;
+								gl_FragColor.rgb += sampleBackground( envRotation3x3 * rayDirection ) * throughputColor;
 								gl_FragColor.a = backgroundAlpha;
 
 							} else {
@@ -3431,8 +5637,8 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 								// get the PDF of the hit envmap point
 								vec3 envColor;
-								float envPdf = envMapSample( environmentRotation * rayDirection, envMapInfo, envColor );
-								envPdf /= float( lightCount + 1u );
+								float envPdf = envMapSample( envRotation3x3 * rayDirection, envMapInfo, envColor );
+								envPdf /= float( lights.count + 1u );
 
 								// and weight the contribution
 								float misWeight = misHeuristic( sampleRec.pdf, envPdf );
@@ -3442,7 +5648,7 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 								gl_FragColor.rgb +=
 									environmentIntensity *
-									sampleEquirectEnvMapColor( environmentRotation * rayDirection, envMapInfo.map ) *
+									sampleEquirectEnvMapColor( envRotation3x3 * rayDirection, envMapInfo.map ) *
 									throughputColor;
 
 								#endif
@@ -3475,7 +5681,10 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 						}
 
-						vec2 uv = textureSampleBarycoord( uvAttribute, barycoord, faceIndices.xyz ).xy;
+						// uv coord for textures
+						vec2 uv = textureSampleBarycoord( attributesArray, ATTR_UV, barycoord, faceIndices.xyz ).xy;
+						vec4 vertexColor = textureSampleBarycoord( attributesArray, ATTR_COLOR, barycoord, faceIndices.xyz );
+
 						// albedo
 						vec4 albedo = vec4( material.color, material.opacity );
 						if ( material.map != - 1 ) {
@@ -3484,8 +5693,14 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 							albedo *= texture2D( textures, vec3( uvPrime.xy, material.map ) );
 						}
 
+						if ( material.vertexColors ) {
+
+							albedo *= vertexColor;
+
+						}
+
 						// alphaMap
-						if ( material.alphaMap != -1 ) {
+						if ( material.alphaMap != - 1 ) {
 
 							albedo.a *= texture2D( textures, vec3( uv, material.alphaMap ) ).x;
 
@@ -3499,16 +5714,15 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 						// and we're rendering the other then we skip it. Do the opposite on subsequent bounces to get incoming light.
 						float alphaTest = material.alphaTest;
 						bool useAlphaTest = alphaTest != 0.0;
-						bool isFirstHit = i == 0;
 						if (
 							// material sidedness
-							material.side != 0.0 && ( side != material.side ) == isFirstHit
+							material.side != 0.0 && side != material.side
 
 							// alpha test
 							|| useAlphaTest && albedo.a < alphaTest
 
 							// opacity
-							|| ! useAlphaTest && albedo.a < rand()
+							|| material.transparent && ! useAlphaTest && albedo.a < rand()
 						) {
 
 							vec3 point = rayOrigin + rayDirection * dist;
@@ -3526,7 +5740,8 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 						// fetch the interpolated smooth normal
 						vec3 normal = normalize( textureSampleBarycoord(
-							normalAttribute,
+							attributesArray,
+							ATTR_NORMAL,
 							barycoord,
 							faceIndices.xyz
 						).xyz );
@@ -3568,10 +5783,12 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 						}
 
 						// normal
+						vec3 baseNormal = normal;
 						if ( material.normalMap != - 1 ) {
 
 							vec4 tangentSample = textureSampleBarycoord(
-								tangentAttribute,
+								attributesArray,
+								ATTR_TANGENT,
 								barycoord,
 								faceIndices.xyz
 							);
@@ -3595,6 +5812,111 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 						normal *= side;
 
+						// clearcoat
+						float clearcoat = material.clearcoat;
+						if ( material.clearcoatMap != - 1 ) {
+
+							vec3 uvPrime = material.clearcoatMapTransform * vec3( uv, 1 );
+							clearcoat *= texture2D( textures, vec3( uvPrime.xy, material.clearcoatMap ) ).r;
+
+						}
+
+						// clearcoatRoughness
+						float clearcoatRoughness = material.clearcoatRoughness;
+						if ( material.clearcoatRoughnessMap != - 1 ) {
+
+							vec3 uvPrime = material.clearcoatRoughnessMapTransform * vec3( uv, 1 );
+							clearcoat *= texture2D( textures, vec3( uvPrime.xy, material.clearcoatRoughnessMap ) ).g;
+
+						}
+
+						// clearcoatNormal
+						vec3 clearcoatNormal = baseNormal;
+						if ( material.clearcoatNormalMap != - 1 ) {
+
+							vec4 tangentSample = textureSampleBarycoord(
+								attributesArray,
+								ATTR_TANGENT,
+								barycoord,
+								faceIndices.xyz
+							);
+
+							// some provided tangents can be malformed (0, 0, 0) causing the normal to be degenerate
+							// resulting in NaNs and slow path tracing.
+							if ( length( tangentSample.xyz ) > 0.0 ) {
+
+								vec3 tangent = normalize( tangentSample.xyz );
+								vec3 bitangent = normalize( cross( clearcoatNormal, tangent ) * tangentSample.w );
+								mat3 vTBN = mat3( tangent, bitangent, clearcoatNormal );
+
+								vec3 uvPrime = material.clearcoatNormalMapTransform * vec3( uv, 1 );
+								vec3 texNormal = texture2D( textures, vec3( uvPrime.xy, material.clearcoatNormalMap ) ).xyz * 2.0 - 1.0;
+								texNormal.xy *= material.clearcoatNormalScale;
+								clearcoatNormal = vTBN * texNormal;
+
+							}
+
+						}
+
+						clearcoatNormal *= side;
+
+						// sheenColor
+						vec3 sheenColor = material.sheenColor;
+						if ( material.sheenColorMap != - 1 ) {
+
+							vec3 uvPrime = material.sheenColorMapTransform * vec3( uv, 1 );
+							sheenColor *= texture2D( textures, vec3( uvPrime.xy, material.sheenColorMap ) ).rgb;
+
+						}
+
+						// sheenRoughness
+						float sheenRoughness = material.sheenRoughness;
+						if ( material.sheenRoughnessMap != - 1 ) {
+
+							vec3 uvPrime = material.sheenRoughnessMapTransform * vec3( uv, 1 );
+							sheenRoughness *= texture2D( textures, vec3( uvPrime.xy, material.sheenRoughnessMap ) ).a;
+
+						}
+
+						// iridescence
+						float iridescence = material.iridescence;
+						if ( material.iridescenceMap != - 1 ) {
+
+							vec3 uvPrime = material.iridescenceMapTransform * vec3( uv, 1 );
+							iridescence *= texture2D( textures, vec3( uvPrime.xy, material.iridescenceMap ) ).r;
+
+						}
+
+						// iridescence thickness
+						float iridescenceThickness = material.iridescenceThicknessMaximum;
+						if ( material.iridescenceThicknessMap != - 1 ) {
+
+							vec3 uvPrime = material.iridescenceThicknessMapTransform * vec3( uv, 1 );
+							float iridescenceThicknessSampled = texture2D( textures, vec3( uvPrime.xy, material.iridescenceThicknessMap ) ).g;
+							iridescenceThickness = mix( material.iridescenceThicknessMinimum, material.iridescenceThicknessMaximum, iridescenceThicknessSampled );
+
+						}
+
+						iridescence = iridescenceThickness == 0.0 ? 0.0 : iridescence;
+
+						// specular color
+						vec3 specularColor = material.specularColor;
+						if ( material.specularColorMap != - 1 ) {
+
+							vec3 uvPrime = material.specularColorMapTransform * vec3( uv, 1 );
+							specularColor *= texture2D( textures, vec3( uvPrime.xy, material.specularColorMap ) ).rgb;
+
+						}
+
+						// specular intensity
+						float specularIntensity = material.specularIntensity;
+						if ( material.specularIntensityMap != - 1 ) {
+
+							vec3 uvPrime = material.specularIntensityMapTransform * vec3( uv, 1 );
+							specularIntensity *= texture2D( textures, vec3( uvPrime.xy, material.specularIntensityMap ) ).a;
+
+						}
+
 						SurfaceRec surfaceRec;
 						surfaceRec.normal = normal;
 						surfaceRec.faceNormal = faceNormal;
@@ -3603,23 +5925,45 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 						surfaceRec.emission = emission;
 						surfaceRec.metalness = metalness;
 						surfaceRec.color = albedo.rgb;
-						surfaceRec.roughness = roughness;
+						surfaceRec.clearcoat = clearcoat;
+						surfaceRec.sheenColor = sheenColor;
+						surfaceRec.iridescence = iridescence;
+						surfaceRec.iridescenceIor = material.iridescenceIor;
+						surfaceRec.iridescenceThickness = iridescenceThickness;
+						surfaceRec.specularColor = specularColor;
+						surfaceRec.specularIntensity = specularIntensity;
+						surfaceRec.attenuationColor = material.attenuationColor;
+						surfaceRec.attenuationDistance = material.attenuationDistance;
+
+						// apply perceptual roughness factor from gltf
+						// https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#microfacet-surfaces
+						surfaceRec.roughness = roughness * roughness;
+						surfaceRec.clearcoatRoughness = clearcoatRoughness * clearcoatRoughness;
+						surfaceRec.sheenRoughness = sheenRoughness * sheenRoughness;
 
 						// frontFace is used to determine transmissive properties and PDF. If no transmission is used
 						// then we can just always assume this is a front face.
 						surfaceRec.frontFace = side == 1.0 || transmission == 0.0;
+						surfaceRec.eta = material.thinFilm || surfaceRec.frontFace ? 1.0 / material.ior : material.ior;
+						surfaceRec.f0 = iorRatioToF0( surfaceRec.eta );
+						surfaceRec.thinFilm = material.thinFilm;
 
 						// Compute the filtered roughness value to use during specular reflection computations.
 						// The accumulated roughness value is scaled by a user setting and a "magic value" of 5.0.
 						// If we're exiting something transmissive then scale the factor down significantly so we can retain
 						// sharp internal reflections
-						surfaceRec.filteredRoughness = clamp( max( surfaceRec.roughness, accumulatedRoughness * filterGlossyFactor * 5.0 ), 0.0, 1.0 );
+						surfaceRec.filteredRoughness = applyFilteredGlossy( surfaceRec.roughness, accumulatedRoughness );
+						surfaceRec.filteredClearcoatRoughness = applyFilteredGlossy( surfaceRec.clearcoatRoughness, accumulatedClearcoatRoughness );
 
 						mat3 normalBasis = getBasisFromNormal( surfaceRec.normal );
 						mat3 invBasis = inverse( normalBasis );
 
+						mat3 clearcoatNormalBasis = getBasisFromNormal( clearcoatNormal );
+						mat3 clearcoatInvBasis = inverse( clearcoatNormalBasis );
+
 						vec3 outgoing = - normalize( invBasis * rayDirection );
-						sampleRec = bsdfSample( outgoing, surfaceRec );
+						vec3 clearcoatOutgoing = - normalize( clearcoatInvBasis * rayDirection );
+						sampleRec = bsdfSample( outgoing, clearcoatOutgoing, normalBasis, invBasis, clearcoatNormalBasis, clearcoatInvBasis, surfaceRec );
 
 						isShadowRay = sampleRec.specularPdf < rand();
 
@@ -3638,10 +5982,10 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 						#if FEATURE_MIS
 
 						// uniformly pick a light or environment map
-						if( rand() > 1.0 / float( lightCount + 1u ) ) {
+						if( rand() > 1.0 / float( lights.count + 1u ) ) {
 
 							// sample a light or environment
-							LightSampleRec lightSampleRec = randomLightSample( lights, lightCount, rayOrigin );
+							LightSampleRec lightSampleRec = randomLightSample( lights.tex, iesProfiles, lights.count, rayOrigin );
 
 							bool isSampleBelowSurface = dot( faceNormal, lightSampleRec.direction ) < 0.0;
 							if ( isSampleBelowSurface ) {
@@ -3659,12 +6003,12 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 								// get the material pdf
 								vec3 sampleColor;
-								float lightMaterialPdf = bsdfResult( outgoing, normalize( invBasis * lightSampleRec.direction ), surfaceRec, sampleColor );
+								float lightMaterialPdf = bsdfResult( outgoing, clearcoatOutgoing, normalize( invBasis * lightSampleRec.direction ), normalize( clearcoatInvBasis * lightSampleRec.direction ), surfaceRec, sampleColor );
 								bool isValidSampleColor = all( greaterThanEqual( sampleColor, vec3( 0.0 ) ) );
 								if ( lightMaterialPdf > 0.0 && isValidSampleColor ) {
 
 									// weight the direct light contribution
-									float lightPdf = lightSampleRec.pdf / float( lightCount + 1u );
+									float lightPdf = lightSampleRec.pdf / float( lights.count + 1u );
 									float misWeight = misHeuristic( lightPdf, lightMaterialPdf );
 									gl_FragColor.rgb += lightSampleRec.emission * throughputColor * sampleColor * misWeight / lightPdf;
 
@@ -3677,7 +6021,7 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 							// find a sample in the environment map to include in the contribution
 							vec3 envColor, envDirection;
 							float envPdf = randomEnvMapSample( envMapInfo, envColor, envDirection );
-							envDirection = invEnvironmentRotation * envDirection;
+							envDirection = invEnvRotation3x3 * envDirection;
 
 							// this env sampling is not set up for transmissive sampling and yields overly bright
 							// results so we ignore the sample in this case.
@@ -3699,12 +6043,12 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 								// get the material pdf
 								vec3 sampleColor;
-								float envMaterialPdf = bsdfResult( outgoing, normalize( invBasis * envDirection ), surfaceRec, sampleColor );
+								float envMaterialPdf = bsdfResult( outgoing, clearcoatOutgoing, normalize( invBasis * envDirection ), normalize( clearcoatInvBasis * envDirection ), surfaceRec, sampleColor );
 								bool isValidSampleColor = all( greaterThanEqual( sampleColor, vec3( 0.0 ) ) );
 								if ( envMaterialPdf > 0.0 && isValidSampleColor ) {
 
 									// weight the direct light contribution
-									envPdf /= float( lightCount + 1u );
+									envPdf /= float( lights.count + 1u );
 									float misWeight = misHeuristic( envPdf, envMaterialPdf );
 									gl_FragColor.rgb += attenuatedColor * environmentIntensity * envColor * throughputColor * sampleColor * misWeight / envPdf;
 
@@ -3722,6 +6066,10 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 							// determine if this is a rough normal or not by checking how far off straight up it is
 							vec3 halfVector = normalize( outgoing + sampleRec.direction );
 							accumulatedRoughness += sin( acosApprox( halfVector.z ) );
+
+							vec3 clearcoatHalfVector = normalize( clearcoatOutgoing + sampleRec.clearcoatDirection );
+							accumulatedClearcoatRoughness += sin( acosApprox( clearcoatHalfVector.z ) );
+
 							transmissiveRay = false;
 
 						}
@@ -3737,6 +6085,13 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 						}
 
 						throughputColor *= sampleRec.color / sampleRec.pdf;
+
+						// attenuate the throughput color by the medium color
+						if ( side == - 1.0 ) {
+
+							throughputColor *= transmissionAttenuation( dist, surfaceRec.attenuationColor, surfaceRec.attenuationDistance );
+
+						}
 
 						// discard the sample if there are any NaNs
 						if ( any( isnan( throughputColor ) ) || any( isinf( throughputColor ) ) ) {
@@ -3763,5 +6118,5 @@ class PhysicalPathTracingMaterial extends MaterialBase {
 
 // core
 
-export { BlurredEnvMapGenerator, DynamicPathTracingSceneGenerator, EquirectHdrInfoUniform, MaterialBase, MaterialReducer, MaterialsTexture, PathTracingRenderer, PathTracingSceneGenerator, PhysicalCamera, PhysicalCameraUniform, PhysicalPathTracingMaterial, RenderTarget2DArray, getGroupMaterialIndicesAttribute, mergeMeshes, setCommonAttributes, shaderLightStruct, shaderMaterialSampling, shaderMaterialStructs, shaderUtils, trimToAttributes };
+export { BlurredEnvMapGenerator, DenoiseMaterial, DynamicPathTracingSceneGenerator, EquirectCamera, EquirectHdrInfoUniform, GradientEquirectTexture, GraphMaterial, IESLoader, IESProfilesTexture, LightsInfoUniformStruct, MaterialBase, MaterialReducer, MaterialsTexture, PathTracingRenderer, PathTracingSceneGenerator, PhysicalCamera, PhysicalCameraUniform, PhysicalPathTracingMaterial, PhysicalSpotLight, ProceduralEquirectTexture, RenderTarget2DArray, ShapedAreaLight, getGroupMaterialIndicesAttribute, mergeMeshes, setCommonAttributes, shaderLightStruct, shaderMaterialSampling, shaderMaterialStructs, shaderUtils, trimToAttributes };
 //# sourceMappingURL=index.module.js.map
