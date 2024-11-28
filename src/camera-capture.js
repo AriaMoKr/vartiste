@@ -12,8 +12,7 @@ import {
 	PhysicalPathTracingMaterial,
 } from './framework/three-gpu-pathtracer.js'
 
-import {Pass as Pass$1} from './framework/three-pass.js';
-const FullScreenQuad = Pass$1.FullScreenQuad
+import {FullScreenQuad} from './framework/three-pass.js'
 
 AFRAME.registerSystem('camera-layers', {
   init() {
@@ -236,7 +235,8 @@ AFRAME.registerSystem('camera-capture', {
 			blending: THREE.CustomBlending,
 		} ) );
 
-		let scene = this.el.sceneEl.object3D
+		// let scene = this.el.sceneEl.object3D
+    let scene = Compositor.el.object3D
 
 		// initialize the scene and update the material properties with the bvh, materials, etc
 		const generator = new PathTracingSceneGenerator();
@@ -247,9 +247,12 @@ AFRAME.registerSystem('camera-capture', {
 
 		// update bvh and geometry attribute textures
 		ptMaterial.bvh.updateFrom( bvh );
-		ptMaterial.normalAttribute.updateFrom( geometry.attributes.normal );
-		ptMaterial.tangentAttribute.updateFrom( geometry.attributes.tangent );
-		ptMaterial.uvAttribute.updateFrom( geometry.attributes.uv );
+    ptMaterial.attributesArray.updateFrom(
+      geometry.attributes.normal,
+      geometry.attributes.tangent,
+      geometry.attributes.uv,
+      geometry.attributes.color,
+    );
 
 		window.ptMaterial = ptMaterial
 
@@ -280,7 +283,7 @@ AFRAME.registerSystem('camera-capture', {
 			fsQuad.render( renderer );
 		}
 
-		for (let i = 0; i < 16; ++i)
+		for (let i = 0; i < 1; ++i)
 		{
 			ptRenderer.update();
 			console.log("Update", i)

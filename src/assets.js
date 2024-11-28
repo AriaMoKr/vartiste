@@ -46,6 +46,7 @@ export function loadAllAssets() {
     loadAsset(fileName, assets)
   }
 }
+window.loadAllAssets = loadAllAssets;
 
 
 // Avoid adding everything twice
@@ -103,7 +104,7 @@ window.AFRAME.registerElement('vartiste-assets', {
         // No more pretending needed
         // this.parentNode.isScene = false
 
-        if (haveVartisteAssetsBeenAdded)
+        if (true)
         {
           this.load()
         }
@@ -114,7 +115,6 @@ window.AFRAME.registerElement('vartiste-assets', {
           })
         }
 
-        this.emit('vartisteassetsadded')
       }
     },
     load: {
@@ -152,6 +152,7 @@ window.AFRAME.registerElement('vartiste-assets', {
           this.hasLoaded = true
           this.emit('loaded', undefined, false)
           parent.load()
+          document.getElementById('loading-page').classList.add("hidden")
         })
 
         // console.log("Waiting", this.waitingFor)
@@ -200,7 +201,7 @@ var domModifiedHandler = function(evt) {
 
 
   // Clean up by removing the event listener
-  document.removeEventListener("DOMSubtreeModified", domModifiedHandler);
+  // document.removeEventListener("DOMSubtreeModified", domModifiedHandler);
 }
 
-document.addEventListener("DOMSubtreeModified", domModifiedHandler, false);
+// document.addEventListener("DOMSubtreeModified", domModifiedHandler, false);

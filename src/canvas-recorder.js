@@ -67,7 +67,7 @@ export {CanvasRecorder}
 Util.registerComponentSystem('compositor-history-recorder', {
   schema: {
     recording: {default: false},
-    throttle: {default: 300},
+    throttle: {default: 800},
     maxFrames: {default: 2000},
     frameRate: {default: 25},
   },

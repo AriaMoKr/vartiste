@@ -9,7 +9,6 @@ import {MarchingSquaresOpt} from './framework/marching-squares.js'
 import simplify2d from 'simplify-2d'
 import simplify3d from 'simplify-3d'
 import {POST_MANIPULATION_PRIORITY} from './manipulator.js'
-import {MeshBVH} from './framework/three-mesh-bvh.js';
 import {Brush, Evaluator, ADDITION, SUBTRACTION, DIFFERENCE, INTERSECTION} from './framework/three-bvh-csg.js';
 
 window.simplify3d = simplify3d;
