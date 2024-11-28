@@ -235,7 +235,8 @@ AFRAME.registerSystem('camera-capture', {
 			blending: THREE.CustomBlending,
 		} ) );
 
-		let scene = this.el.sceneEl.object3D
+		// let scene = this.el.sceneEl.object3D
+    let scene = Compositor.el.object3D
 
 		// initialize the scene and update the material properties with the bvh, materials, etc
 		const generator = new PathTracingSceneGenerator();
