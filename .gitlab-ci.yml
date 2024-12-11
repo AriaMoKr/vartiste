@@ -21,7 +21,6 @@ build:
 .launcher_base: &launcher_base
   stage: build
   image: golang:1.16
-  variables:
   script:
     - go get github.com/tc-hib/go-winres@latest
     - pushd chromium/launcher
@@ -39,6 +38,7 @@ launcher:
   <<: *launcher_base
   only:
     - release
+  when: manual
   artifacts:
     paths:
       - chromium/launcher/*.exe
