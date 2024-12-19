@@ -56,7 +56,7 @@ test:
     HEADLESS: 'true'
   script:
     - cd tests
-    - npm install
+    # - npm install
     # Skip tests temporarily. Not great but what can you do....
     # - ./node_modules/codeceptjs/bin/codecept.js run --debug --steps
   artifacts:
@@ -84,6 +84,7 @@ chromium:
   <<: *chromium_base
   only:
     - release
+  when: manual
   artifacts:
     paths:
       - chromium/*.zip
