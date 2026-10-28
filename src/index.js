@@ -104,6 +104,9 @@ require('./decorators')
 require('./popup-book')
 require('./simplified-interface.js')
 
+// The way back to the place that opened it (the art room's door, on Pages)
+require('./way-back.js')
+
 require('./hubs-connector-shim.js')
 
 require('./app.styl')

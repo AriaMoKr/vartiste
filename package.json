@@ -77,6 +77,7 @@
     "aframe-leap-hands": "^0.8.0",
     "aframe-troika-text": "^0.6.0",
     "bson": "^4.4.0",
+    "common": "github:AriaMoKr/common#v0.6.3",
     "convolve": "^0.1.0",
     "dexie": "^2.0.4",
     "gif.js": "^0.2.0",
