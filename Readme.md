@@ -13,9 +13,11 @@ the Apache License 2.0, in [LICENSE](LICENSE). What this fork changes from upstr
 (095259b, 2024-12-18):
 
 - **The build on today's Node.** `package.json` drops the top-level `sharp` 0.24 devDependency,
-  which nothing requires and which no longer compiles on Node 24; `package-lock.json` is made again
-  in npm's current format, with the same packages at the same versions; and the new `.npmrc` sets
-  `legacy-peer-deps`, so `npm ci` installs as npm 6, upstream's CI, did.
+  which nothing requires and which no longer compiles on Node 24. `package-lock.json` is made again
+  in npm's current format: `sharp` 0.24 and what only it pulled in (`prebuild-install`, `npmlog` and
+  theirs) are gone, and every other package is at the same version, each git dependency at the same
+  commit. The new `.npmrc` sets `legacy-peer-deps`, so `npm ci` installs as npm 6, upstream's CI,
+  did.
 - **The Pages workflow.** The new `.github/workflows/pages.yml` makes the production build of every
   entry, as upstream's GitLab Pages job does, and publishes it on each push to `release`.
 - **The way back.** The new `src/way-back.js`, required from `src/index.js`: when the art room
