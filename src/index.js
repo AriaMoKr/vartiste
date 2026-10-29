@@ -104,7 +104,8 @@ require('./decorators')
 require('./popup-book')
 require('./simplified-interface.js')
 
-// The way back to the place that opened it (the art room's door, on Pages)
+// This fork's (AriaMoKr/vartiste, not upstream's; Readme.md, "This fork"): the way back to the
+// place that opened it, the art room's door on GitHub Pages
 require('./way-back.js')
 
 require('./hubs-connector-shim.js')
